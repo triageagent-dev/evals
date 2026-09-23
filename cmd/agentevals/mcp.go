@@ -1,11 +1,15 @@
 // mcp.go implements `agentevals mcp`: a Model Context Protocol server on
 // stdio, for use with Claude Code, Cursor, GitHub Copilot CLI, and other
 // MCP clients. Ported from agentevals' mcp_server.py's create_server -
-// same four tools (list_metrics, evaluate_traces, list_sessions,
+// same four core tools (list_metrics, evaluate_traces, list_sessions,
 // summarize_session), same tool/parameter names and response field names
 // (snake_case, matching Python's pydantic models - this is a different
 // wire contract than internal/api's camelCase REST DTOs, which exist to
-// match the React UI's TypeScript types instead).
+// match the React UI's TypeScript types instead). Additive over Python:
+// list_runs/get_run_results expose this Go port's run-history storage
+// (internal/api/runs.go, GET /api/runs and /api/runs/{id}/results), which
+// has no Python equivalent - mcp_server.py doesn't have run history
+// persistence to surface at all.
 //
 // Not ported: evaluate_sessions (streaming_routes.py's
 // POST /api/streaming/evaluate-sessions isn't implemented yet - see
@@ -13,16 +17,16 @@
 // (no eval_config.yaml loader exists in this port at all yet).
 //
 // Auth (additive over Python, which sends no auth header at all yet):
-// list_sessions/summarize_session call a running `agentevals serve` over
-// HTTP and can't do an interactive GitHub OAuth login themselves, so
-// something has to go in an `Authorization: Bearer <token>` header on
-// every request to reach a GitHub-OAuth-gated deployment
-// non-interactively. Two ways to supply it, checked in this order:
-// --session-token/AGENTEVALS_SESSION_TOKEN (an agentevals-minted token
-// from `agentevals auth mint-token`), or, if neither is set, a fallback to
-// running `gh auth token` and sending that GitHub token straight through -
-// internal/api's requireSession accepts a live GitHub token as an
-// alternative to its own signed tokens (see
+// every tool that calls a running `agentevals serve` over HTTP (list_
+// sessions, summarize_session, list_runs, get_run_results) can't do an
+// interactive GitHub OAuth login itself, so something has to go in an
+// `Authorization: Bearer <token>` header on every request to reach a
+// GitHub-OAuth-gated deployment non-interactively. Two ways to supply it,
+// checked in this order: --session-token/AGENTEVALS_SESSION_TOKEN (an
+// agentevals-minted token from `agentevals auth mint-token`), or, if
+// neither is set, a fallback to running `gh auth token` and sending that
+// GitHub token straight through - internal/api's requireSession accepts a
+// live GitHub token as an alternative to its own signed tokens (see
 // internal/api/githubtoken.go), precisely so this needs no separately
 // minted secret at all when the caller already has `gh` authenticated as
 // a member of the deployment's GitHub org. evaluate_traces needs no
@@ -38,6 +42,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -159,6 +164,26 @@ func newMCPServer(backend *mcpBackend) *server.MCPServer {
 		mcp.WithString("session_id", mcp.Required(),
 			mcp.Description("Session ID obtained from list_sessions.")),
 	), summarizeSessionHandler(backend))
+
+	s.AddTool(mcp.NewTool("list_runs",
+		mcp.WithDescription("List past evaluation runs (run history), most recent first. Use this to discover run "+
+			"IDs for get_run_results. Requires the agentevals server to be running with --session-db/"+
+			"AGENTEVALS_SESSION_DB_PATH set (run history storage)."),
+		mcp.WithNumber("limit", mcp.DefaultNumber(20),
+			mcp.Description("Maximum number of runs to return.")),
+		mcp.WithArray("status",
+			mcp.Description("Optional status filter, e.g. [\"succeeded\"], [\"failed\"], [\"running\"]. Returns all statuses if omitted."),
+			mcp.Items(map[string]any{"type": "string"})),
+	), listRunsHandler(backend))
+
+	s.AddTool(mcp.NewTool("get_run_results",
+		mcp.WithDescription("Get the full result detail for one evaluation run: its status, summary counts, "+
+			"per-metric averages, and the per-eval-case/per-evaluator result rows (scores, pass/fail, errors). "+
+			"Use this after list_runs to inspect why a run passed or failed. Requires the agentevals server to "+
+			"be running with run history storage enabled."),
+		mcp.WithString("run_id", mcp.Required(),
+			mcp.Description("Run ID obtained from list_runs.")),
+	), getRunResultsHandler(backend))
 
 	return s
 }
@@ -578,6 +603,195 @@ func summarizeSessionHandler(backend *mcpBackend) server.ToolHandlerFunc {
 			}
 		}
 		out.NumInvocations = len(out.Invocations)
+		return mcp.NewToolResultStructuredOnly(out), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// list_runs
+// ---------------------------------------------------------------------------
+
+type runResultCountsMCP struct {
+	Passed  int `json:"passed"`
+	Failed  int `json:"failed"`
+	Errored int `json:"errored"`
+	Skipped int `json:"skipped"`
+}
+
+type runPerMetricMCP struct {
+	Passed   int      `json:"passed"`
+	Failed   int      `json:"failed"`
+	Errored  int      `json:"errored"`
+	Skipped  int      `json:"skipped"`
+	AvgScore *float64 `json:"avg_score"`
+}
+
+type runSummaryMCP struct {
+	TraceCount   int                        `json:"trace_count"`
+	ResultCounts runResultCountsMCP         `json:"result_counts"`
+	PerMetric    map[string]runPerMetricMCP `json:"per_metric,omitempty"`
+	Agents       []string                   `json:"agents,omitempty"`
+	Errors       []string                   `json:"errors,omitempty"`
+}
+
+// runListItemMCP mirrors internal/api/runs.go's runDTO, deliberately
+// dropping its Spec's full eval-set/eval-config blobs (potentially
+// megabytes of raw trace/conversation data per run) - list_runs is for
+// discovering run IDs and their pass/fail summary, not for fetching the
+// traces a run was evaluated against.
+type runListItemMCP struct {
+	RunID      string         `json:"run_id"`
+	Status     string         `json:"status"`
+	Approach   string         `json:"approach,omitempty"`
+	Error      *string        `json:"error,omitempty"`
+	Summary    *runSummaryMCP `json:"summary,omitempty"`
+	CreatedAt  string         `json:"created_at"`
+	StartedAt  *string        `json:"started_at,omitempty"`
+	FinishedAt *string        `json:"finished_at,omitempty"`
+}
+
+func listRunsHandler(backend *mcpBackend) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		limit := req.GetInt("limit", 20)
+		statuses := req.GetStringSlice("status", nil)
+
+		// Matches internal/api's runDTO (server.go's listRunsHandler).
+		var raw []struct {
+			RunID  string `json:"runId"`
+			Status string `json:"status"`
+			Spec   struct {
+				Approach string `json:"approach,omitempty"`
+			} `json:"spec"`
+			Error      *string        `json:"error,omitempty"`
+			Summary    *runSummaryMCP `json:"summary,omitempty"`
+			CreatedAt  string         `json:"createdAt"`
+			StartedAt  *string        `json:"startedAt,omitempty"`
+			FinishedAt *string        `json:"finishedAt,omitempty"`
+		}
+
+		path := fmt.Sprintf("/api/runs?limit=%d", limit)
+		for _, s := range statuses {
+			path += "&status=" + url.QueryEscape(s)
+		}
+		if err := backend.get(ctx, path, &raw); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		out := make([]runListItemMCP, len(raw))
+		for i, r := range raw {
+			out[i] = runListItemMCP{
+				RunID:      r.RunID,
+				Status:     r.Status,
+				Approach:   r.Spec.Approach,
+				Error:      r.Error,
+				Summary:    r.Summary,
+				CreatedAt:  r.CreatedAt,
+				StartedAt:  r.StartedAt,
+				FinishedAt: r.FinishedAt,
+			}
+		}
+		return mcp.NewToolResultStructuredOnly(out), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// get_run_results
+// ---------------------------------------------------------------------------
+
+type runResultRowMCP struct {
+	ResultID            string         `json:"result_id"`
+	EvalSetItemID       string         `json:"eval_set_item_id"`
+	EvalSetItemName     string         `json:"eval_set_item_name"`
+	EvaluatorName       string         `json:"evaluator_name"`
+	EvaluatorType       string         `json:"evaluator_type"`
+	Status              string         `json:"status"`
+	Score               *float64       `json:"score"`
+	PerInvocationScores []*float64     `json:"per_invocation_scores,omitempty"`
+	TraceID             *string        `json:"trace_id,omitempty"`
+	Details             map[string]any `json:"details,omitempty"`
+	ErrorText           *string        `json:"error_text,omitempty"`
+}
+
+type getRunResultsResultMCP struct {
+	RunID      string            `json:"run_id"`
+	Status     string            `json:"status"`
+	Approach   string            `json:"approach,omitempty"`
+	Error      *string           `json:"error,omitempty"`
+	Summary    *runSummaryMCP    `json:"summary,omitempty"`
+	CreatedAt  string            `json:"created_at"`
+	StartedAt  *string           `json:"started_at,omitempty"`
+	FinishedAt *string           `json:"finished_at,omitempty"`
+	Results    []runResultRowMCP `json:"results"`
+}
+
+func getRunResultsHandler(backend *mcpBackend) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		runID, err := req.RequireString("run_id")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		// Matches internal/api's runDTO (server.go's getRunHandler).
+		var run struct {
+			RunID  string `json:"runId"`
+			Status string `json:"status"`
+			Spec   struct {
+				Approach string `json:"approach,omitempty"`
+			} `json:"spec"`
+			Error      *string        `json:"error,omitempty"`
+			Summary    *runSummaryMCP `json:"summary,omitempty"`
+			CreatedAt  string         `json:"createdAt"`
+			StartedAt  *string        `json:"startedAt,omitempty"`
+			FinishedAt *string        `json:"finishedAt,omitempty"`
+		}
+		if err := backend.get(ctx, "/api/runs/"+url.PathEscape(runID), &run); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		// Matches internal/api's runResultRowDTO (server.go's getRunResultsHandler).
+		var rows []struct {
+			ResultID            string         `json:"resultId"`
+			EvalSetItemID       string         `json:"evalSetItemId"`
+			EvalSetItemName     string         `json:"evalSetItemName"`
+			EvaluatorName       string         `json:"evaluatorName"`
+			EvaluatorType       string         `json:"evaluatorType"`
+			Status              string         `json:"status"`
+			Score               *float64       `json:"score"`
+			PerInvocationScores []*float64     `json:"perInvocationScores"`
+			TraceID             *string        `json:"traceId,omitempty"`
+			Details             map[string]any `json:"details,omitempty"`
+			ErrorText           *string        `json:"errorText,omitempty"`
+		}
+		if err := backend.get(ctx, "/api/runs/"+url.PathEscape(runID)+"/results", &rows); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		out := getRunResultsResultMCP{
+			RunID:      run.RunID,
+			Status:     run.Status,
+			Approach:   run.Spec.Approach,
+			Error:      run.Error,
+			Summary:    run.Summary,
+			CreatedAt:  run.CreatedAt,
+			StartedAt:  run.StartedAt,
+			FinishedAt: run.FinishedAt,
+			Results:    make([]runResultRowMCP, len(rows)),
+		}
+		for i, r := range rows {
+			out.Results[i] = runResultRowMCP{
+				ResultID:            r.ResultID,
+				EvalSetItemID:       r.EvalSetItemID,
+				EvalSetItemName:     r.EvalSetItemName,
+				EvaluatorName:       r.EvaluatorName,
+				EvaluatorType:       r.EvaluatorType,
+				Status:              r.Status,
+				Score:               r.Score,
+				PerInvocationScores: r.PerInvocationScores,
+				TraceID:             r.TraceID,
+				Details:             r.Details,
+				ErrorText:           r.ErrorText,
+			}
+		}
 		return mcp.NewToolResultStructuredOnly(out), nil
 	}
 }

@@ -81,11 +81,24 @@ Sessions, Run History, and saved EvalSets survive a restart if you point `serve`
 ```
 
 `agentevals mcp` starts a [Model Context Protocol](https://modelcontextprotocol.io/) server on stdio (for
-Claude Code, Cursor, GitHub Copilot CLI, etc.) exposing `list_metrics`, `evaluate_traces`, `list_sessions`,
-and `summarize_session`. Point it at a running `serve`; if that server has GitHub OAuth enabled, it
-authenticates non-interactively with, in order: an explicit `--session-token`/`AGENTEVALS_SESSION_TOKEN`,
-or - simplest, no token to mint or store at all - `gh auth token`'s output, as long as you're already logged
-in as a member of the deployment's GitHub org:
+Claude Code, Cursor, GitHub Copilot CLI, etc.) exposing six tools:
+
+| Tool | Needs `serve` running? | Description |
+|---|---|---|
+| `list_metrics` | yes | List available metrics and their requirements. |
+| `evaluate_traces` | no (reads local files) | Evaluate local trace file(s) against selected metrics. |
+| `list_sessions` | yes | List recent streaming sessions, most recent first. |
+| `summarize_session` | yes | Show a session's invocations, tool calls, and messages. |
+| `list_runs` | yes (+ `--session-db`) | List past evaluation runs (run history), most recent first. |
+| `get_run_results` | yes (+ `--session-db`) | Get one run's full summary and per-eval-case result rows. |
+
+`list_runs`/`get_run_results` are additive over Python (which has no run-history persistence to expose) and
+require the server to have run history storage enabled (`serve --session-db`/`AGENTEVALS_SESSION_DB_PATH`).
+
+Point it at a running `serve`; if that server has GitHub OAuth enabled, it authenticates non-interactively
+with, in order: an explicit `--session-token`/`AGENTEVALS_SESSION_TOKEN`, or - simplest, no token to mint or
+store at all - `gh auth token`'s output, as long as you're already logged in as a member of the deployment's
+GitHub org:
 
 ```bash
 AGENTEVALS_SERVER_URL=https://your-app.example.com ./bin/agentevals mcp   # uses `gh auth token` automatically

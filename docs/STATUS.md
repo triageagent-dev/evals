@@ -133,9 +133,15 @@
   GitHub-OAuth-gated deployment non-interactively via, in order: `--session-token`/
   `AGENTEVALS_SESSION_TOKEN` if set, else `gh auth token`'s output if `gh` is installed and logged in (see
   "GitHub-token bearer auth" above) - an enhancement over Python's stdio tools, which send no auth header at
-  all. Not ported: `evaluate_sessions` (its backing endpoint,
-  `POST /api/streaming/evaluate-sessions`, isn't implemented in this port at all - see below) and the
-  `eval_config_file` parameter on `evaluate_traces` (no `eval_config.yaml` loader exists in this port yet).
+  all. Also additive over Python (no equivalent there, since Python's `mcp_server.py` has no run-history
+  persistence to expose at all): `list_runs`/`get_run_results`, which surface this port's own run-history
+  storage (`internal/api/runs.go`'s `GET /api/runs`/`GET /api/runs/{id}/results`, so they also require
+  `serve --session-db`/`AGENTEVALS_SESSION_DB_PATH`) - `list_runs` deliberately omits each run's full
+  eval-set/eval-config blob (potentially megabytes of raw trace/conversation data) from its summary, since
+  it's meant for discovering run IDs and pass/fail counts, not for re-fetching traces. Not ported:
+  `evaluate_sessions` (its backing endpoint, `POST /api/streaming/evaluate-sessions`, isn't implemented in
+  this port at all - see below) and the `eval_config_file` parameter on `evaluate_traces` (no
+  `eval_config.yaml` loader exists in this port yet).
 - **Session persistence** (`internal/api/sqlitestore.go`) - ported from `storage/session_store.py`'s
   `SqliteSessionStore`: one SQLite row per session, the whole session serialized as a JSON blob (so a field
   added to `Session` never needs a migration), WAL mode, restore-at-startup + a 10s periodic snapshot (matching

@@ -174,6 +174,103 @@ func TestSummarizeSessionHandler_ParsesTraceContentIntoInvocations(t *testing.T)
 	}
 }
 
+func TestListRunsHandler_FiltersByStatusAndAppliesLimit(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/runs" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+			{"runId":"run-1","status":"succeeded","spec":{"approach":"traces"},"createdAt":"2024-01-01T00:00:00Z",
+			 "summary":{"trace_count":2,"result_counts":{"passed":2,"failed":0,"errored":0,"skipped":0}}}
+		],"error":null}`))
+	}))
+	defer srv.Close()
+
+	backend := &mcpBackend{baseURL: srv.URL, client: srv.Client()}
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"limit": float64(5), "status": []any{"succeeded"}}
+	result, err := listRunsHandler(backend)(t.Context(), req)
+	if err != nil {
+		t.Fatalf("listRunsHandler: %v", err)
+	}
+
+	if !strings.Contains(gotQuery, "limit=5") || !strings.Contains(gotQuery, "status=succeeded") {
+		t.Fatalf("query = %q, want limit=5 and status=succeeded", gotQuery)
+	}
+
+	var out []runListItemMCP
+	structuredContent(t, result, &out)
+	if len(out) != 1 || out[0].RunID != "run-1" || out[0].Approach != "traces" {
+		t.Fatalf("unexpected runs list: %+v", out)
+	}
+	if out[0].Summary == nil || out[0].Summary.TraceCount != 2 || out[0].Summary.ResultCounts.Passed != 2 {
+		t.Fatalf("unexpected run summary: %+v", out[0].Summary)
+	}
+}
+
+func TestListRunsHandler_StorageUnavailableReportsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"data":null,"error":"Run history storage is not configured (start with --session-db to enable /api/runs)"}`))
+	}))
+	defer srv.Close()
+
+	backend := &mcpBackend{baseURL: srv.URL, client: srv.Client()}
+	result, err := listRunsHandler(backend)(t.Context(), mcp.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("handler itself should not error, got: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("want an error result when run history storage is unavailable")
+	}
+}
+
+func TestGetRunResultsHandler_CombinesRunSummaryAndResultRows(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/runs/run-1":
+			_, _ = w.Write([]byte(`{"data":{"runId":"run-1","status":"succeeded","spec":{"approach":"traces"},
+				"createdAt":"2024-01-01T00:00:00Z",
+				"summary":{"trace_count":1,"result_counts":{"passed":1,"failed":0,"errored":0,"skipped":0}}},"error":null}`))
+		case "/api/runs/run-1/results":
+			_, _ = w.Write([]byte(`{"data":[{"resultId":"res-1","evalSetItemId":"item-1","evalSetItemName":"case 1",
+				"evaluatorName":"tool_trajectory_avg_score","evaluatorType":"local","status":"passed","score":1.0,
+				"perInvocationScores":[1.0],"createdAt":"2024-01-01T00:00:01Z"}],"error":null}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	backend := &mcpBackend{baseURL: srv.URL, client: srv.Client()}
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"run_id": "run-1"}
+	result, err := getRunResultsHandler(backend)(t.Context(), req)
+	if err != nil {
+		t.Fatalf("getRunResultsHandler: %v", err)
+	}
+
+	var out getRunResultsResultMCP
+	structuredContent(t, result, &out)
+	if out.RunID != "run-1" || out.Approach != "traces" {
+		t.Fatalf("unexpected run: %+v", out)
+	}
+	if out.Summary == nil || out.Summary.TraceCount != 1 {
+		t.Fatalf("unexpected summary: %+v", out.Summary)
+	}
+	if len(out.Results) != 1 || out.Results[0].ResultID != "res-1" || out.Results[0].EvaluatorName != "tool_trajectory_avg_score" {
+		t.Fatalf("unexpected results: %+v", out.Results)
+	}
+	if out.Results[0].Score == nil || *out.Results[0].Score != 1.0 {
+		t.Fatalf("unexpected score: %+v", out.Results[0].Score)
+	}
+}
+
 func TestEvaluateTracesHandler_OfflineHelmQuickstart(t *testing.T) {
 	dir := samplesDir(t)
 	traceFile := filepath.Join(dir, "helm.json")
