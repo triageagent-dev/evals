@@ -136,6 +136,29 @@
   `agentevals auth mint-token` at all. The cache sweeps its own expired entries (at most once per TTL window,
   on the next `validate` call after one elapses) so a long-running server queried by many distinct tokens
   over time doesn't grow this map unboundedly.
+- **Multi-user RBAC** (`internal/api/roles.go`, `rolesstore.go`, `roleshandlers.go`) - additive over Python
+  (no equivalent there at all: Python's auth model, and this port's own auth model up to this point, is a
+  single tier - any org member has full read/write access, nothing finer-grained). Three roles, ranked
+  `admin > member > viewer`: `admin` can manage role bindings and does everything `member` can; `member` is
+  this port's pre-existing full read/write behavior; `viewer` is read-only (blocked with 403 from
+  `POST /api/evaluate`, the `/api/streaming/evaluate` SSE variant, and `POST /api/evalsets`) and can
+  optionally be scoped to only see Run History entries for specific agent names. A `RoleBinding` grants a
+  role to either a GitHub username (`user:<login>`) or a GitHub team (`team:<org>/<slug>`), with an optional
+  `agents` allowlist; when several bindings match one request, only the bindings at the single highest rank
+  among the matches apply (so a lower-rank team binding never narrows a higher-rank direct-user binding), and
+  their agent scopes are unioned. Bindings are managed via `GET`/`POST /api/admin/roles` and
+  `DELETE /api/admin/roles/{id}` (admin-only), persisted in the same session SQLite database as run history
+  when `--session-db` is set, and in-memory only otherwise. A run/trace with no resolvable agent name is
+  always visible, even to an agent-scoped viewer - "can't tell, so don't over-restrict". Team membership is
+  resolved live via GitHub's `/user/teams` API at two points: at OAuth login time (cached for the session's
+  TTL) and per-request for GitHub-token bearer auth (reusing "GitHub-token bearer auth"'s own 5-minute
+  cache); a cookie-only session with no cached team lookup simply has no team bindings apply until its next
+  login - a known limitation, not a bug. Fully opt-in: with no `--session-secret` set, `RoleStore` is never
+  constructed and every request behaves exactly as before this feature existed; even with it set, an
+  unconfigured deployment's `--default-role` (default `member`) preserves the old single-tier behavior for
+  everyone until an admin actually adds bindings. Bootstrap admins are seeded idempotently from
+  `--admin-github-users`/`AGENTEVALS_ADMIN_GITHUB_USERS` (comma-separated GitHub logins) on every `serve`
+  startup. Manageable from `agentevals mcp` too - see below.
 - **MCP server** (`cmd/agentevals/mcp.go`, `agentevals mcp`) - a stdio Model Context Protocol server (via
   [`github.com/mark3labs/mcp-go`](https://pkg.go.dev/github.com/mark3labs/mcp-go)), ported from
   `mcp_server.py`'s `create_server`: `list_metrics`, `evaluate_traces` (fully offline - loads trace files
@@ -152,10 +175,14 @@
   storage (`internal/api/runs.go`'s `GET /api/runs`/`GET /api/runs/{id}/results`, so they also require
   `serve --session-db`/`AGENTEVALS_SESSION_DB_PATH`) - `list_runs` deliberately omits each run's full
   eval-set/eval-config blob (potentially megabytes of raw trace/conversation data) from its summary, since
-  it's meant for discovering run IDs and pass/fail counts, not for re-fetching traces. Not ported:
-  `evaluate_sessions` (its backing endpoint, `POST /api/streaming/evaluate-sessions`, isn't implemented in
-  this port at all - see below) and the `eval_config_file` parameter on `evaluate_traces` (no
-  `eval_config.yaml` loader exists in this port yet).
+  it's meant for discovering run IDs and pass/fail counts, not for re-fetching traces. Further additive (no
+  Python equivalent, since RBAC itself is new to this port - see "Multi-user RBAC" above):
+  `list_role_bindings`, `set_role_binding`, `delete_role_binding`, thin wrappers over
+  `GET`/`POST /api/admin/roles` and `DELETE /api/admin/roles/{id}` - all three require the caller's resolved
+  role to be `admin`, same as the REST endpoints themselves. Not ported: `evaluate_sessions` (its backing
+  endpoint, `POST /api/streaming/evaluate-sessions`, isn't implemented in this port at all - see below) and
+  the `eval_config_file` parameter on `evaluate_traces` (no `eval_config.yaml` loader exists in this port
+  yet).
 - **Session persistence** (`internal/api/sqlitestore.go`) - ported from `storage/session_store.py`'s
   `SqliteSessionStore`: one SQLite row per session, the whole session serialized as a JSON blob (so a field
   added to `Session` never needs a migration), WAL mode, restore-at-startup + a 10s periodic snapshot (matching

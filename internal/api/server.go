@@ -69,15 +69,31 @@ const persistInterval = 10 * time.Second
 // transitional period running alongside another service that mints them);
 // if both are empty, auth is disabled entirely (see requireSession).
 //
+// Whenever sessionSecret is set, this service also enables multi-user
+// role-based access control (roles.go): every authenticated request is
+// resolved to a Role (admin/member/viewer), optionally scoped to specific
+// agents, via role bindings an admin manages at GET/POST /api/admin/roles
+// and DELETE /api/admin/roles/{id} - gated to RoleAdmin only. defaultRole
+// (validated by cmd/agentevals's serveCmd, must be "admin", "member", or
+// "viewer") applies to any authenticated user with no matching binding -
+// "member" preserves this port's original single-tier, fully-open
+// behavior for a deployment that never configures a binding at all.
+// adminGitHubUsers idempotently bootstraps a first RoleAdmin for each
+// listed GitHub login (see NewRoleStore) - the only way to get an admin
+// into an otherwise-empty role store, since nothing else can grant
+// RoleAdmin without already holding it.
+//
 // The UI is baked into the binary via the ui package's go:embed (see
 // Makefile's build-ui - embedding reads whatever was on disk in ui/dist at
 // `go build` time). If sessionDBPath is non-empty, sessions are restored
 // from and periodically archived to a SQLite file there (ported from
 // ws_server.py's StreamingTraceManager(sqlite_path=...); see
-// AGENTEVALS_SESSION_DB_PATH in the Python CLI). Blocks until any listener
-// returns an error or the process receives SIGINT/SIGTERM, in which case
-// it flushes a final snapshot before returning.
-func Serve(addr, otlpAddr, otlpGRPCAddr, healthAddr, sessionDBPath, sessionSecret string, githubOAuth *GitHubOAuthConfig) error {
+// AGENTEVALS_SESSION_DB_PATH in the Python CLI) - role bindings persist in
+// the same file when it's configured, in-memory-only for this process's
+// lifetime otherwise. Blocks until any listener returns an error or the
+// process receives SIGINT/SIGTERM, in which case it flushes a final
+// snapshot before returning.
+func Serve(addr, otlpAddr, otlpGRPCAddr, healthAddr, sessionDBPath, sessionSecret string, githubOAuth *GitHubOAuthConfig, adminGitHubUsers []string, defaultRole string) error {
 	hub := newSSEHub()
 
 	var store *SessionStore
@@ -100,6 +116,18 @@ func Serve(addr, otlpAddr, otlpGRPCAddr, healthAddr, sessionDBPath, sessionSecre
 		store = NewSessionStore(hub)
 	}
 
+	var roleStore *RoleStore
+	if sessionSecret != "" {
+		role, err := ParseRole(defaultRole)
+		if err != nil {
+			return fmt.Errorf("default role: %w", err)
+		}
+		roleStore, err = NewRoleStore(archive, role, adminGitHubUsers)
+		if err != nil {
+			return fmt.Errorf("opening role store: %w", err)
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/streaming/sessions", sessionsHandler(store))
 	mux.HandleFunc("/api/streaming/get-trace", getTraceHandler(store))
@@ -116,6 +144,8 @@ func Serve(addr, otlpAddr, otlpGRPCAddr, healthAddr, sessionDBPath, sessionSecre
 	mux.HandleFunc("/api/convert", convertHandler)
 	mux.HandleFunc("/api/evaluate", evaluateHandler(archive))
 	mux.HandleFunc("/api/evaluate/stream", evaluateStreamHandler(archive))
+	mux.HandleFunc("/api/admin/roles", adminRolesHandler(roleStore))
+	mux.HandleFunc("/api/admin/roles/{id}", adminRoleByIDHandler(roleStore))
 
 	uiDist, err := fs.Sub(uiassets.DistFS, "dist")
 	if err != nil {
@@ -172,15 +202,22 @@ func Serve(addr, otlpAddr, otlpGRPCAddr, healthAddr, sessionDBPath, sessionSecre
 	// goes through requireSession.
 	topMux := http.NewServeMux()
 	ghTokens := newGitHubTokenValidator(githubOAuth)
+	roleOrg := ""
+	if githubOAuth != nil {
+		roleOrg = githubOAuth.Org
+	}
 	topMux.HandleFunc("/api/health", healthHandler)
-	topMux.HandleFunc("/auth/me", authMeHandler(sessionSecret, ghTokens))
+	topMux.HandleFunc("/auth/me", authMeHandler(sessionSecret, ghTokens, roleStore, roleOrg))
 	if githubOAuth != nil {
 		topMux.HandleFunc("/auth/login", authLoginHandler(githubOAuth))
-		topMux.HandleFunc("/auth/callback", authCallbackHandler(githubOAuth))
+		topMux.HandleFunc("/auth/callback", authCallbackHandler(githubOAuth, roleStore))
 		topMux.HandleFunc("/auth/logout", authLogoutHandler())
 		log.Printf("independent GitHub OAuth enabled for %s: org=%q, callback=%q", addr, githubOAuth.Org, githubOAuth.callbackURL())
 	}
-	topMux.Handle("/", requireSession(sessionSecret, ghTokens, mux))
+	if roleStore != nil {
+		log.Printf("multi-user RBAC enabled for %s: default role=%q, %d role binding(s) loaded", addr, defaultRole, len(roleStore.List()))
+	}
+	topMux.Handle("/", requireSession(sessionSecret, ghTokens, withRole(roleStore, roleOrg, sessionSecret, ghTokens, mux.ServeHTTP)))
 
 	go func() {
 		log.Printf("agentevals-go listening on %s", addr)

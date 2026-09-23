@@ -84,7 +84,7 @@ Sessions, Run History, and saved EvalSets survive a restart if you point `serve`
 ```
 
 `agentevals mcp` starts a [Model Context Protocol](https://modelcontextprotocol.io/) server on stdio (for
-Claude Code, Cursor, GitHub Copilot CLI, etc.) exposing six tools:
+Claude Code, Cursor, GitHub Copilot CLI, etc.) exposing nine tools:
 
 | Tool | Needs `serve` running? | Description |
 |---|---|---|
@@ -94,9 +94,14 @@ Claude Code, Cursor, GitHub Copilot CLI, etc.) exposing six tools:
 | `summarize_session` | yes | Show a session's invocations, tool calls, and messages. |
 | `list_runs` | yes (+ `--session-db`) | List past evaluation runs (run history), most recent first. |
 | `get_run_results` | yes (+ `--session-db`) | Get one run's full summary and per-eval-case result rows. |
+| `list_role_bindings` | yes (+ `--session-secret`), admin only | List role bindings (multi-user RBAC). |
+| `set_role_binding` | yes (+ `--session-secret`), admin only | Create/update a role binding for a GitHub user or team. |
+| `delete_role_binding` | yes (+ `--session-secret`), admin only | Delete a role binding by ID. |
 
 `list_runs`/`get_run_results` are additive over Python (which has no run-history persistence to expose) and
 require the server to have run history storage enabled (`serve --session-db`/`AGENTEVALS_SESSION_DB_PATH`).
+`list_role_bindings`/`set_role_binding`/`delete_role_binding` are likewise additive (Python has no
+multi-user roles at all) and require the server to have RBAC enabled - see "Multi-user roles" below.
 
 Point it at a running `serve`; if that server has GitHub OAuth enabled, it authenticates non-interactively
 with, in order: an explicit `--session-token`/`AGENTEVALS_SESSION_TOKEN`, or - simplest, no token to mint or
@@ -116,6 +121,24 @@ AGENTEVALS_SERVER_URL=https://your-app.example.com \
 AGENTEVALS_SESSION_TOKEN=<token from above> \
   ./bin/agentevals mcp
 ```
+
+## Multi-user roles
+
+Additive over Python (which has a single access tier - any org member has full access). When `serve` runs
+with GitHub OAuth enabled (`--session-secret`/`AGENTEVALS_SESSION_SECRET`), you can assign one of three
+roles - `admin`, `member` (default, full read/write, matches the pre-existing behavior), or `viewer`
+(read-only, optionally restricted to specific agent names in Run History) - to a GitHub username or team:
+
+```bash
+./bin/agentevals serve --session-secret "$AGENTEVALS_SESSION_SECRET" \
+  --admin-github-users octocat --default-role member --session-db ./sessions.db
+```
+
+`--admin-github-users` (comma-separated GitHub logins, or `AGENTEVALS_ADMIN_GITHUB_USERS`) seeds bootstrap
+admins idempotently on every startup. From there, an admin manages bindings via
+`GET`/`POST /api/admin/roles` and `DELETE /api/admin/roles/{id}`, or the `list_role_bindings`/
+`set_role_binding`/`delete_role_binding` MCP tools above. With no `--session-secret` set at all, this
+feature is inert and every request behaves exactly as before it existed.
 
 ## Docs
 

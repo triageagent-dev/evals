@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 )
 
@@ -125,10 +126,14 @@ func listRunsHandler(store *SQLiteStore) http.HandlerFunc {
 			writeEvaluateError(w, http.StatusInternalServerError, "failed to list runs: "+err.Error())
 			return
 		}
-		if runs == nil {
-			runs = []runDTO{}
+		info := roleInfoOrOpen(r.Context())
+		visible := make([]runDTO, 0, len(runs))
+		for _, run := range runs {
+			if runVisibleForRole(run, info) {
+				visible = append(visible, run)
+			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"data": runs, "error": nil})
+		writeJSON(w, http.StatusOK, map[string]any{"data": visible, "error": nil})
 	}
 }
 
@@ -148,7 +153,7 @@ func getRunHandler(store *SQLiteStore) http.HandlerFunc {
 			writeEvaluateError(w, http.StatusInternalServerError, "failed to fetch run: "+err.Error())
 			return
 		}
-		if !ok {
+		if !ok || !runVisibleForRole(run, roleInfoOrOpen(r.Context())) {
 			writeEvaluateError(w, http.StatusNotFound, "run not found")
 			return
 		}
@@ -165,6 +170,19 @@ func getRunResultsHandler(store *SQLiteStore) http.HandlerFunc {
 		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		// Fetched only to apply the same per-agent role scoping
+		// getRunHandler does - a restricted viewer must not be able to
+		// read a run's result rows just because they know its ID, even
+		// without ever seeing it via GET /api/runs or GET /api/runs/{id}.
+		run, ok, err := store.GetRun(r.PathValue("id"))
+		if err != nil {
+			writeEvaluateError(w, http.StatusInternalServerError, "failed to fetch run: "+err.Error())
+			return
+		}
+		if !ok || !runVisibleForRole(run, roleInfoOrOpen(r.Context())) {
+			writeEvaluateError(w, http.StatusNotFound, "run not found")
 			return
 		}
 		rows, err := store.GetRunResults(r.PathValue("id"))
@@ -294,6 +312,7 @@ func persistCompletedRun(store *SQLiteStore, spec runSpecSummaryDTO, req *evalua
 		TraceCount:   len(result.TraceResults),
 		ResultCounts: counts,
 		PerMetric:    perMetric,
+		Agents:       distinctAgentNames(result.TraceResults),
 		Errors:       result.Errors,
 	}
 
@@ -309,4 +328,28 @@ func persistCompletedRun(store *SQLiteStore, spec runSpecSummaryDTO, req *evalua
 		errMsg = &msg
 	}
 	return store.FinishRun(run.RunID, status, summary, errMsg)
+}
+
+// distinctAgentNames collects each non-empty traceResultDTO.AgentName
+// across results, deduplicated and sorted, for runSummaryDTO.Agents - the
+// only field this port's per-agent role scoping (roles.go) actually
+// filters on. Returns nil (not an empty slice) when no trace in this run
+// had a resolvable agent name, so RoleInfo.AllowsAnyAgent's "can't tell,
+// so allow" default applies to the whole run rather than hiding it.
+func distinctAgentNames(results []traceResultDTO) []string {
+	seen := map[string]bool{}
+	for _, r := range results {
+		if r.AgentName != "" {
+			seen[r.AgentName] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
