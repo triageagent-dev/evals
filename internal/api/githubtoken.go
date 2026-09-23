@@ -38,8 +38,9 @@ type githubTokenValidator struct {
 	cfg    *GitHubOAuthConfig
 	client *http.Client
 
-	mu    sync.Mutex
-	cache map[string]githubTokenCacheEntry
+	mu        sync.Mutex
+	cache     map[string]githubTokenCacheEntry
+	lastSweep time.Time
 }
 
 func newGitHubTokenValidator(cfg *GitHubOAuthConfig) *githubTokenValidator {
@@ -66,6 +67,7 @@ func (v *githubTokenValidator) validate(token string) (username string, ok bool)
 		v.mu.Unlock()
 		return entry.username, entry.ok
 	}
+	v.sweepExpiredLocked()
 	v.mu.Unlock()
 
 	login, err := fetchGitHubLogin(v.client, token)
@@ -79,6 +81,25 @@ func (v *githubTokenValidator) validate(token string) (username string, ok bool)
 	v.cache[key] = githubTokenCacheEntry{username: username, ok: ok, expires: time.Now().Add(githubTokenCacheTTL)}
 	v.mu.Unlock()
 	return username, ok
+}
+
+// sweepExpiredLocked drops expired cache entries, at most once per
+// githubTokenCacheTTL, so a long-running server that sees many distinct
+// bearer tokens over time (many different MCP/CLI callers, each with
+// their own `gh auth token` value) doesn't grow this map unboundedly -
+// entries are otherwise only ever added, never removed on their own.
+// Must be called with v.mu held.
+func (v *githubTokenValidator) sweepExpiredLocked() {
+	now := time.Now()
+	if now.Sub(v.lastSweep) < githubTokenCacheTTL {
+		return
+	}
+	v.lastSweep = now
+	for key, entry := range v.cache {
+		if now.After(entry.expires) {
+			delete(v.cache, key)
+		}
+	}
 }
 
 // githubTokenCacheKey hashes token rather than using it verbatim as a map

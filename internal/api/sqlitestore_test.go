@@ -130,6 +130,77 @@ func TestSQLiteStore_Delete(t *testing.T) {
 	}
 }
 
+// TestFlushPersist_SkipsWhenNothingChanged confirms flushPersist's fast
+// path: once every session has been durably saved, calling it again with
+// no further mutations does no work at all (changeSeq == lastPersistedSeq
+// short-circuits before any snapshot/marshal/DB round trip).
+func TestFlushPersist_SkipsWhenNothingChanged(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	archive, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("opening archive: %v", err)
+	}
+	defer archive.Close()
+
+	store := NewSessionStoreWithArchive(nil, archive)
+	store.Ingest(sampleTracesBody("sess-a", "aaaa", "span-a"))
+
+	if err := store.flushPersist(); err != nil {
+		t.Fatalf("first flushPersist: %v", err)
+	}
+	seqAfterFirst := store.lastPersistedSeq
+	if seqAfterFirst == 0 {
+		t.Fatal("want lastPersistedSeq to advance after a real flush")
+	}
+	persistedSeqAfterFirst := store.persistedSeq["sess-a"]
+
+	if err := store.flushPersist(); err != nil {
+		t.Fatalf("second flushPersist: %v", err)
+	}
+	if store.lastPersistedSeq != seqAfterFirst {
+		t.Errorf("lastPersistedSeq changed on a no-op flush: got %d, want unchanged %d", store.lastPersistedSeq, seqAfterFirst)
+	}
+	if store.persistedSeq["sess-a"] != persistedSeqAfterFirst {
+		t.Errorf("persistedSeq[sess-a] changed on a no-op flush: got %d, want unchanged %d", store.persistedSeq["sess-a"], persistedSeqAfterFirst)
+	}
+}
+
+// TestFlushPersist_OnlyPersistsChangedSession confirms flushPersist skips
+// re-saving a session that hasn't changed even when a sibling session in
+// the same store has - the scenario the reviewer flagged (one active
+// session amid many long-completed ones re-marshaled/rewritten on every
+// tick for no reason).
+func TestFlushPersist_OnlyPersistsChangedSession(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	archive, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("opening archive: %v", err)
+	}
+	defer archive.Close()
+
+	store := NewSessionStoreWithArchive(nil, archive)
+	store.Ingest(sampleTracesBody("sess-a", "aaaa", "span-a"))
+	store.Ingest(sampleTracesBody("sess-b", "bbbb", "span-b"))
+	if err := store.flushPersist(); err != nil {
+		t.Fatalf("first flushPersist: %v", err)
+	}
+	seqA := store.persistedSeq["sess-a"]
+	seqB := store.persistedSeq["sess-b"]
+
+	// Only sess-a changes further.
+	store.Ingest(sampleTracesBodyWithParent("sess-a", "aaaa", "span-a2", "span-a"))
+	if err := store.flushPersist(); err != nil {
+		t.Fatalf("second flushPersist: %v", err)
+	}
+
+	if store.persistedSeq["sess-a"] <= seqA {
+		t.Errorf("persistedSeq[sess-a] did not advance after sess-a changed: got %d, want > %d", store.persistedSeq["sess-a"], seqA)
+	}
+	if store.persistedSeq["sess-b"] != seqB {
+		t.Errorf("persistedSeq[sess-b] changed even though sess-b was untouched: got %d, want unchanged %d", store.persistedSeq["sess-b"], seqB)
+	}
+}
+
 // TestSessionStore_NoArchiveIsNoop confirms the store works exactly as
 // before when no SQLite path is configured (LoadPersisted/StartPersistence/
 // Close all become no-ops).

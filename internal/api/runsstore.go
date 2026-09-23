@@ -37,6 +37,14 @@ func ensureRunsSchema(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at)`); err != nil {
 		return fmt.Errorf("creating runs.created_at index: %w", err)
 	}
+	// Covers ListRuns' most selective query shape (status IN (...) ORDER BY
+	// created_at DESC) - idx_runs_created_at alone lets SQLite use the
+	// index for the ORDER BY but still requires a full table scan to apply
+	// the status filter, or vice versa; a composite index lets it satisfy
+	// both from one index walk instead.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_status_created_at ON runs(status, created_at)`); err != nil {
+		return fmt.Errorf("creating runs.status,created_at index: %w", err)
+	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS run_results (
 		result_id TEXT PRIMARY KEY,
 		run_id TEXT NOT NULL,

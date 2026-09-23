@@ -48,6 +48,16 @@ type Session struct {
 	CompletedAt    *time.Time
 	Invocations    []InvocationDTO
 	extractor      *incremental.Extractor
+
+	// changeSeq is this session's own stamp from SessionStore.changeSeq as
+	// of its last mutation - only ever set with SessionStore.mu held. A
+	// zero-value session (freshly restored from the archive, not yet
+	// mutated again) is never dirty until something changes it again;
+	// compared against SessionStore.persistedSeq[id] to let flushPersist
+	// skip re-marshaling/re-saving a session that hasn't changed since it
+	// was last durably written, even when other sessions in the same
+	// SessionStore have.
+	changeSeq uint64
 }
 
 // SessionSummary is the JSON shape returned by GET /api/streaming/sessions
@@ -138,6 +148,25 @@ type SessionStore struct {
 	completionGrace  time.Duration
 	idleTimers       map[string]*time.Timer
 	completionTimers map[string]*time.Timer
+
+	// changeSeq/lastPersistedSeq let flushPersist skip its snapshot+DB
+	// round trip entirely when nothing has changed since the last
+	// successful persist (e.g. an idle deployment with no active OTLP
+	// traffic, ticking every persistInterval for no reason otherwise).
+	// persistedSeq additionally lets it skip re-marshaling/re-saving
+	// individual sessions that haven't changed even when *some* other
+	// session has (e.g. one active session amid many long-completed
+	// ones that will never mutate again). All three are only ever
+	// touched with mu held. changeSeq is bumped by every mutation to a
+	// Session's persisted fields (span ingestion, completion, reopening),
+	// and that new value is stamped onto the mutated Session's own
+	// changeSeq; lastPersistedSeq/persistedSeq only ever advance to a
+	// changeSeq value flushPersist has confirmed was durably written -
+	// never on a failed write, so a failed persist is retried next tick
+	// exactly as before this optimization, not silently dropped.
+	changeSeq        uint64
+	lastPersistedSeq uint64
+	persistedSeq     map[string]uint64
 }
 
 func NewSessionStore(hub *sseHub) *SessionStore {
@@ -147,8 +176,18 @@ func NewSessionStore(hub *sseHub) *SessionStore {
 		idleTimeout:      defaultIdleTimeout,
 		completionGrace:  defaultCompletionGrace,
 		idleTimers:       map[string]*time.Timer{},
+		persistedSeq:     map[string]uint64{},
 		completionTimers: map[string]*time.Timer{},
 	}
+}
+
+// markChangedLocked bumps the store-wide change counter and stamps it onto
+// session, marking it (and only it) dirty for the next flushPersist. Must
+// be called with s.mu held, at every point a Session's persisted fields
+// (Spans/HasRootSpan/IsComplete/CompletedAt/EvalSetID/Invocations) change.
+func (s *SessionStore) markChangedLocked(session *Session) {
+	s.changeSeq++
+	session.changeSeq = s.changeSeq
 }
 
 // NewSessionStoreWithArchive is NewSessionStore plus a SQLiteStore to
@@ -246,14 +285,53 @@ func (s *SessionStore) StartPersistence(interval time.Duration, stop <-chan stru
 	}()
 }
 
+// flushPersist snapshots and saves only the sessions that changed since
+// the last snapshot this function itself confirmed was durably saved -
+// both as a whole (the changeSeq/lastPersistedSeq fast path skips the
+// entire cycle when nothing anywhere changed, e.g. an idle deployment
+// ticking every persistInterval for no reason) and individually (a
+// session whose own changeSeq stamp is no newer than what persistedSeq[id]
+// already reflects is left out of the batch, so one active session amid
+// many long-completed ones that will never mutate again doesn't cause
+// every one of them to be re-marshaled and rewritten every tick). See
+// changeSeq's doc comment on SessionStore. A failed SaveAll leaves
+// lastPersistedSeq/persistedSeq untouched, so the same sessions are
+// retried next tick, exactly as before this optimization existed (when
+// every tick unconditionally retried everything).
 func (s *SessionStore) flushPersist() error {
 	s.mu.Lock()
-	snapshot := make(map[string]*Session, len(s.sessions))
+	seq := s.changeSeq
+	if seq == s.lastPersistedSeq {
+		s.mu.Unlock()
+		return nil
+	}
+	snapshot := make(map[string]*Session)
+	captured := make(map[string]uint64, len(s.sessions))
 	for id, sess := range s.sessions {
-		snapshot[id] = sess
+		if sess.changeSeq > s.persistedSeq[id] {
+			snapshot[id] = sess
+			captured[id] = sess.changeSeq
+		}
 	}
 	s.mu.Unlock()
-	return s.store.SaveAll(snapshot)
+
+	if len(snapshot) > 0 {
+		if err := s.store.SaveAll(snapshot); err != nil {
+			return err
+		}
+	}
+
+	s.mu.Lock()
+	for id, v := range captured {
+		if v > s.persistedSeq[id] {
+			s.persistedSeq[id] = v
+		}
+	}
+	if seq > s.lastPersistedSeq {
+		s.lastPersistedSeq = seq
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // Close flushes a final snapshot and closes the archive, if configured.
@@ -336,6 +414,7 @@ func (s *SessionStore) Ingest(body map[string]any) int {
 					break
 				}
 				session.Spans = append(session.Spans, span)
+				s.markChangedLocked(session)
 				ingested++
 
 				if s.hub != nil {
@@ -375,10 +454,12 @@ func (s *SessionStore) getOrCreateSession(name, traceID, evalSetID string, resou
 		}
 		s.sessions[name] = session
 		s.order = append(s.order, name)
+		s.markChangedLocked(session)
 		isNew = true
 	} else {
 		if evalSetID != "" {
 			session.EvalSetID = evalSetID
+			s.markChangedLocked(session)
 		}
 		// Ported from ws_server.py's _reopen_session: a trace already
 		// bound to this session can still emit more spans after it was
@@ -388,6 +469,7 @@ func (s *SessionStore) getOrCreateSession(name, traceID, evalSetID string, resou
 		if session.IsComplete {
 			session.IsComplete = false
 			session.CompletedAt = nil
+			s.markChangedLocked(session)
 		}
 	}
 	session.TraceIDs[traceID] = struct{}{}
@@ -434,6 +516,7 @@ func (s *SessionStore) completeSession(sessionID string) {
 	now := time.Now().UTC()
 	session.IsComplete = true
 	session.CompletedAt = &now
+	s.markChangedLocked(session)
 
 	// Batch-convert the session's full span set into real invocations
 	// (tool calls, user/agent text, model info) now that it's done -

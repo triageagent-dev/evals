@@ -133,7 +133,9 @@
   5 minutes to bound the added GitHub API traffic. Additive over Python (no equivalent there): a non-browser
   client with no agentevals-minted token of its own - most notably `agentevals mcp` - can authenticate with
   whatever GitHub token it already has, e.g. `gh auth token`'s output, instead of needing
-  `agentevals auth mint-token` at all.
+  `agentevals auth mint-token` at all. The cache sweeps its own expired entries (at most once per TTL window,
+  on the next `validate` call after one elapses) so a long-running server queried by many distinct tokens
+  over time doesn't grow this map unboundedly.
 - **MCP server** (`cmd/agentevals/mcp.go`, `agentevals mcp`) - a stdio Model Context Protocol server (via
   [`github.com/mark3labs/mcp-go`](https://pkg.go.dev/github.com/mark3labs/mcp-go)), ported from
   `mcp_server.py`'s `create_server`: `list_metrics`, `evaluate_traces` (fully offline - loads trace files
@@ -229,6 +231,17 @@ Porter stemmer, `use_stemmer=True`) and does not special-case CJK/Thai/combining
 `final_response_match_v1.py`'s `_UnicodeAwareTokenizer` does. Scores will run a little lower here on inflected
 English text and won't be meaningful on non-Latin scripts yet. Fixing this means either vendoring a Go Porter
 stemmer or reimplementing `_UnicodeAwareTokenizer`'s character-class logic in Go.
+
+## Known dependency advisory (no stable fix yet)
+
+`govulncheck ./...` flags one advisory whose call path this binary actually exercises:
+[GO-2026-6443](https://pkg.go.dev/vuln/GO-2026-6443), a `google.golang.org/grpc` server panic on a request
+missing its `:authority`/`Host` header, reachable via `api.Serve`'s gRPC OTLP receiver
+(`internal/api/server.go`, `:4317`). As of this writing the only fix is an unreleased
+`v1.85.0-dev.0.20260825072537-93e31b48545e` pseudo-version - no tagged stable release fixes it yet - so
+`go.mod` deliberately stays on the latest real stable release (`v1.84.0`, which does fix the module's other
+flagged advisory, GO-2026-6348) rather than pinning to an unreleased dev snapshot in a public repo's
+dependency graph. Re-run `govulncheck ./...` and bump to the first stable release ≥ v1.85.0 once one exists.
 
 ## Not yet ported
 
