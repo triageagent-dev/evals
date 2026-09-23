@@ -53,9 +53,13 @@ Key flows:
   `judgeMetrics` map, since local metrics deliberately have no judge/API-key dependency).
 - **Live `serve`**: OTLP/HTTP (`:4318`) and OTLP/gRPC (`:4317`) receivers both feed the *same*
   `internal/api` `SessionStore` and conversion path - don't special-case one over the other. Sessions group by
-  `agentevals.session_name` → `gen_ai.conversation.id` → synthetic-name fallback. `GET /stream/ui-updates`
-  (SSE, not the `/ws/traces` WebSocket - that's a separate, not-yet-ported SDK ingestion channel, easy to
-  confuse) is what `ui/src/components/streaming/LiveStreamingView.tsx`'s `EventSource` actually connects to.
+  `agentevals.session_name` → `gen_ai.conversation.id` → synthetic-name fallback. The live UI feed
+  (`ui/src/components/streaming/LiveStreamingView.tsx`) connects over `GET /ws/ui-updates` (WebSocket,
+  `internal/api/wsupdates.go`), not SSE - it was switched from `EventSource` because the cluster's gateway
+  buffers/never forwards long-lived SSE responses; `GET /stream/ui-updates` (SSE, `internal/api/sse.go`,
+  same underlying `sseHub`) still exists as a curl-able fallback and is what Python's equivalent uses. Both
+  are distinct from `/ws/traces`, a separate, not-yet-ported SDK ingestion channel - easy to confuse with
+  `/ws/ui-updates`.
 - Session persistence (`internal/api/sqlitestore.go`) stores one SQLite row per session as a whole-session JSON
   blob (adding a `Session` field never needs a migration) - opt-in via `serve --session-db` /
   `AGENTEVALS_SESSION_DB_PATH`.

@@ -44,14 +44,17 @@ make serve   # builds the UI, serves it + REST API on :8001, OTLP/HTTP receiver 
 ```
 
 Point any OTel-instrumented agent at the receiver and it shows up live: `GET /api/streaming/sessions` for a
-snapshot, `GET /stream/ui-updates` (SSE) for the live feed the UI's `EventSource` connects to.
+snapshot, `GET /ws/ui-updates` (WebSocket) for the live feed the UI actually connects to (`GET
+/stream/ui-updates`, Server-Sent Events, still exists as a fallback/for `curl`, but some gateways buffer or
+never forward long-lived SSE responses, so the UI's `LiveStreamingView.tsx` uses WebSocket instead - see
+docs/STATUS.md).
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318   # OTLP/HTTP exporters (gRPC exporters use :4317)
 python your_agent.py
 
 curl http://localhost:8001/api/streaming/sessions
-curl -N http://localhost:8001/stream/ui-updates
+curl -N http://localhost:8001/stream/ui-updates   # SSE - simplest way to tail the feed from a shell
 ```
 
 `final_response_match_v2`, `hallucinations_v1`, and `rubric_based_*_v1` need a judge model to call: a Gemini

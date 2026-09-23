@@ -43,14 +43,26 @@
   way the HTTP receiver needs one for `application/x-protobuf` bodies. Covers gRPC-only OTel exporters, which
   the HTTP-only receiver couldn't accept before. Verified with a real listener + the standard collector gRPC
   client, not just an in-process call (`internal/api/grpc_test.go`).
-- **Live SSE push to the UI** (`internal/incremental`, `internal/api/sse.go`) - `GET /stream/ui-updates`, the
-  endpoint `ui/src/components/streaming/LiveStreamingView.tsx`'s `EventSource` actually connects to (the
-  `/ws/traces` WebSocket in the Python project is a *separate*, not-yet-ported ingestion channel for the
-  AgentEvals SDK, not a UI output - easy to mix up, see the comment on `internal/api/sse.go`). Broadcasts
-  `session_started`, `span_received`, and, per span, the conversation-element updates from a faithful port of
-  `streaming/incremental_processor.py`'s `IncrementalInvocationExtractor` (`user_input`, `agent_response`,
-  `tool_call`, `tool_result`, `token_update`, with the same dedup behavior). Verified against a real HTTP/SSE
-  round trip, not just unit tests.
+- **Live SSE push to the UI** (`internal/incremental`, `internal/api/sse.go`) - `GET /stream/ui-updates`
+  (Server-Sent Events), ported from `ws_server.py`'s `sse_queues`/`register_sse_client`/
+  `unregister_sse_client`/`broadcast_to_ui` (the `/ws/traces` WebSocket in the Python project is a *separate*,
+  not-yet-ported ingestion channel for the AgentEvals SDK, not a UI output - easy to mix up, see the comment
+  on `internal/api/sse.go`). Broadcasts `session_started`, `span_received`, and, per span, the
+  conversation-element updates from a faithful port of `streaming/incremental_processor.py`'s
+  `IncrementalInvocationExtractor` (`user_input`, `agent_response`, `tool_call`, `tool_result`,
+  `token_update`, with the same dedup behavior). Verified against a real HTTP/SSE round trip, not just unit
+  tests. **This port's own deployment no longer uses this endpoint for the live UI feed** (see the next
+  bullet) - it's kept as a simple, curl-able fallback (`curl -N .../stream/ui-updates`), matching Python's
+  only transport.
+- **WebSocket alternative to the SSE feed** (`internal/api/wsupdates.go`, `GET /ws/ui-updates`) - additive
+  over Python, not present upstream. `ui/src/components/streaming/LiveStreamingView.tsx`'s live feed was
+  switched from `EventSource`/SSE to this WebSocket endpoint after finding the cluster's gateway
+  (`agentgateway`) buffers - never forwards - long-lived SSE responses (confirmed against Python's own
+  `/stream/ui-updates` through the identical gateway: same failure, not specific to this port). Broadcasts
+  the exact same events as `/stream/ui-updates`, from the same `sseHub`; only the transport differs. If this
+  UI is ever redeployed behind a gateway that forwards SSE correctly, the WS-specific block in
+  `LiveStreamingView.tsx` can be reverted back to `EventSource` (the prior version is preserved in git
+  history) - or both can simply be left in place, since they're driven by the same hub and don't conflict.
 - **`final_response_match_v2`** (`internal/judge`) - the first LLM-as-judge metric, via
   [`google.golang.org/genai`](https://pkg.go.dev/google.golang.org/genai) (no `litellm`, no Python). The prompt
   template (`_FINAL_RESPONSE_MATCH_V2_PROMPT`), the `_parse_critique` regex-based label extraction, and the
