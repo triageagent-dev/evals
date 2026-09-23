@@ -1,0 +1,90 @@
+package api
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"sync"
+	"time"
+)
+
+// githubTokenCacheTTL bounds how long a validated raw GitHub token (e.g.
+// `gh auth token`'s output) is trusted before this service re-checks it
+// against GitHub's API - long enough that a burst of calls in one MCP
+// session or browser session costs one GitHub API round trip, not one per
+// call, short enough that a revoked token or org membership change is
+// re-checked promptly rather than trusted indefinitely the way our own
+// long-lived mint-token tokens are (those are trusted until AGENTEVALS_
+// SESSION_SECRET itself is rotated).
+const githubTokenCacheTTL = 5 * time.Minute
+
+type githubTokenCacheEntry struct {
+	username string
+	ok       bool
+	expires  time.Time
+}
+
+// githubTokenValidator authenticates a bearer value that isn't one of
+// this service's own signed session tokens (see extractSessionUsername)
+// by treating it as a live GitHub access token instead - the same check
+// authCallbackHandler does after GitHub's OAuth code exchange, just
+// skipping the exchange step itself (fetchGitHubLogin + checkOrgMembership
+// are the exact same helpers). This is additive over Python (which has no
+// equivalent): it lets a non-browser client - most notably
+// cmd/agentevals/mcp.go's stdio MCP server - authenticate with whatever
+// GitHub token it already has (`gh auth token`'s output, most commonly),
+// instead of needing a separately minted agentevals bearer token at all.
+type githubTokenValidator struct {
+	cfg    *GitHubOAuthConfig
+	client *http.Client
+
+	mu    sync.Mutex
+	cache map[string]githubTokenCacheEntry
+}
+
+func newGitHubTokenValidator(cfg *GitHubOAuthConfig) *githubTokenValidator {
+	return &githubTokenValidator{
+		cfg:    cfg,
+		client: &http.Client{Timeout: 10 * time.Second},
+		cache:  make(map[string]githubTokenCacheEntry),
+	}
+}
+
+// validate returns the GitHub login for token if it is both a valid
+// GitHub access token and belongs to an active member of cfg.Org - the
+// same two conditions the OAuth callback enforces before minting a
+// session cookie. A nil validator (no GitHub OAuth configured) or an
+// empty token always fails closed.
+func (v *githubTokenValidator) validate(token string) (username string, ok bool) {
+	if v == nil || v.cfg == nil || token == "" {
+		return "", false
+	}
+
+	key := githubTokenCacheKey(token)
+	v.mu.Lock()
+	if entry, found := v.cache[key]; found && time.Now().Before(entry.expires) {
+		v.mu.Unlock()
+		return entry.username, entry.ok
+	}
+	v.mu.Unlock()
+
+	login, err := fetchGitHubLogin(v.client, token)
+	if err == nil {
+		if member, memberErr := checkOrgMembership(v.client, v.cfg.Org, login, token); memberErr == nil && member {
+			username, ok = login, true
+		}
+	}
+
+	v.mu.Lock()
+	v.cache[key] = githubTokenCacheEntry{username: username, ok: ok, expires: time.Now().Add(githubTokenCacheTTL)}
+	v.mu.Unlock()
+	return username, ok
+}
+
+// githubTokenCacheKey hashes token rather than using it verbatim as a map
+// key, so a raw GitHub access token is never held in memory longer than
+// the single validate() call that receives it.
+func githubTokenCacheKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}

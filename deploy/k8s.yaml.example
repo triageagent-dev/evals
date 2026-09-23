@@ -1,0 +1,307 @@
+# Example Kubernetes manifest for deploying agentevals-go - sanitized for
+# public use. Every org/project/registry/hostname-specific value below is a
+# placeholder (YOUR_*, your-*, example.com); copy this file to k8s.yaml,
+# fill in your own values, and apply it to your cluster. See README.md's
+# "Quick start" for what each component (OTLP receivers, judge model auth,
+# session persistence, GitHub OAuth) is for.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agentevals-go-session-db
+  namespace: agentevals
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentevals-go
+  namespace: agentevals
+  labels:
+    app: agentevals-go
+spec:
+  replicas: 1
+  # RollingUpdate (the default) tries to bring up the new pod before
+  # tearing down the old one - with a single ReadWriteOnce PVC (session-db
+  # below), if the scheduler happens to place the new pod on a different
+  # node than the old one, the new pod's volume attach permanently fails
+  # with a Multi-Attach error while the old pod (still Running, still
+  # holding the volume) never gets torn down to free it: a deadlock this
+  # single-replica, PVC-backed Deployment hit in practice. Recreate avoids
+  # it by fully terminating the old pod first - a few seconds of downtime
+  # per deploy, which is fine for a single-replica service like this one.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: agentevals-go
+  template:
+    metadata:
+      labels:
+        app: agentevals-go
+    spec:
+      imagePullSecrets:
+        - name: your-registry-pull-secret
+      # gcr.io/distroless/static-debian12:nonroot runs as UID/GID 65532; the
+      # session-db PVC mounts root-owned by default, so without fsGroup the
+      # SQLite archive can't open its file (SQLITE_CANTOPEN).
+      securityContext:
+        fsGroup: 65532
+      # Workload Identity: binds to your-service-account@your-gcp-project.iam.gserviceaccount.com
+      # (roles/aiplatform.user), the same GSA the Python agentevals
+      # Deployment uses, so judge.NewGenAIModel can reach Vertex AI via
+      # Application Default Credentials - no GOOGLE_API_KEY/GEMINI_API_KEY
+      # anywhere.
+      serviceAccountName: agentevals
+      containers:
+        - name: agentevals-go
+          image: ghcr.io/YOUR_ORG/agentevals-go:0.1.0
+          args:
+            - serve
+            - --addr=:8001
+            - --otlp-addr=:4318
+            - --otlp-grpc-addr=:4317
+            - --health-addr=:9090
+            - --session-db=/data/agentevals-go-sessions.db
+          env:
+            # Independent GitHub OAuth (internal/api/oauth.go): this
+            # service runs its own /auth/login -> /auth/callback flow and
+            # no longer depends on the Python service (kept at 0/0 - see
+            # README.md's Auth section) to mint the agentevals_session
+            # cookie or to answer /auth/login at all. Values match the
+            # Python agentevals Deployment's own GitHub OAuth App/org/
+            # secrets exactly - same App, same org gate, same signing
+            # secret - so a session cookie either service mints validates
+            # against the other; that's incidental (Python is being
+            # retired), not a dependency this service takes on.
+            - name: AGENTEVALS_GITHUB_CLIENT_ID
+              value: YOUR_GITHUB_OAUTH_CLIENT_ID
+            - name: AGENTEVALS_GITHUB_ORG
+              value: YOUR_GITHUB_ORG
+            - name: AGENTEVALS_PUBLIC_URL
+              value: https://your-public-hostname.example.com
+            - name: AGENTEVALS_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: agentevals-github-oauth
+                  key: GITHUB_CLIENT_SECRET
+            - name: AGENTEVALS_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: agentevals-session-secret
+                  key: SESSION_SECRET
+            # Vertex AI backend for judge.NewGenAIModel (final_response_match_v2
+            # and any future judge metric), via the serviceAccountName above's
+            # ADC - no API key. Values match the Python agentevals
+            # Deployment's own env exactly, for parity.
+            - name: GOOGLE_GENAI_USE_VERTEXAI
+              value: "true"
+            - name: GOOGLE_CLOUD_PROJECT
+              value: your-gcp-project
+            - name: GOOGLE_CLOUD_LOCATION
+              value: us-central1
+          ports:
+            - name: http
+              containerPort: 8001
+            - name: otlp-http
+              containerPort: 4318
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: health
+              containerPort: 9090
+          volumeMounts:
+            - name: session-db
+              mountPath: /data
+          # Health lives on its own port (never gated, never shares a mux
+          # with the auth-behind routes on `http`) - see
+          # internal/api/server.go's Serve doc comment.
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: session-db
+          persistentVolumeClaim:
+            claimName: agentevals-go-session-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentevals-go
+  namespace: agentevals
+spec:
+  selector:
+    app: agentevals-go
+  ports:
+    - name: http
+      port: 8001
+      targetPort: http
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: health
+      port: 9090
+      targetPort: health
+---
+# Claims only the /evals-go prefix as a secondary alias, rewritten to /
+# before forwarding. NOTE: despite this route needing only one rule, the
+# embedded UI's built assets are actually unprefixed (/assets/index-*.js,
+# not /evals-go/assets/...) - an earlier assumption that the UI was built
+# with --base=/evals-go/ was wrong. That's harmless for this alias only
+# because the "agentevals" HTTPRoute below now also points its unprefixed
+# second rule (/assets, /api/*, /auth, /stream, /ws, ...) at this same
+# agentevals-go Service - so a request that arrives here, gets its /evals-go
+# prefix stripped, and returns unprefixed asset URLs to the browser still
+# resolves correctly when the browser re-requests them. /evals (below) is
+# this service's canonical public path; this route is kept only so
+# /evals-go keeps working for anyone with it bookmarked/cached.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agentevals-go
+  namespace: agentevals
+spec:
+  hostnames:
+    - your-public-hostname.example.com
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: your-gateway
+      namespace: gateway-system
+      sectionName: http
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /evals-go
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: agentevals-go
+          port: 8001
+          weight: 1
+---
+# The canonical public route: claims /evals (rewritten to /) plus every
+# unprefixed supporting path the UI's browser bundle actually requests
+# (/assets, /api/*, /auth/*, /stream, /ws, ...) - both rules point at the
+# agentevals-go Service now, not Python's. This resource is NOT
+# Helm-managed (plain kubectl-applied, confirmed via its annotations
+# lacking meta.helm.sh/*), so tracking and applying it from here is safe:
+# nothing else reconciles it out from under this file. Kept as the same
+# resource name ("agentevals") the Python-era route used, so applying this
+# file updates it in place rather than creating a duplicate.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agentevals
+  namespace: agentevals
+spec:
+  hostnames:
+    - your-public-hostname.example.com
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: your-gateway
+      namespace: gateway-system
+      sectionName: http
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /evals
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: agentevals-go
+          port: 8001
+          weight: 1
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /assets
+        - path:
+            type: PathPrefix
+            value: /logo.svg
+        - path:
+            type: PathPrefix
+            value: /vite.svg
+        - path:
+            type: PathPrefix
+            value: /favicon.ico
+        - path:
+            type: PathPrefix
+            value: /ws
+        - path:
+            type: PathPrefix
+            value: /api/config
+        - path:
+            type: PathPrefix
+            value: /api/convert
+        - path:
+            type: PathPrefix
+            value: /api/debug
+        - path:
+            type: PathPrefix
+            value: /api/evaluate
+        - path:
+            type: PathPrefix
+            value: /api/evalsets
+        - path:
+            type: PathPrefix
+            value: /api/health
+        - path:
+            type: PathPrefix
+            value: /api/metrics
+        - path:
+            type: PathPrefix
+            value: /api/runs
+        - path:
+            type: PathPrefix
+            value: /api/streaming
+        - path:
+            type: PathPrefix
+            value: /api/validate
+        - path:
+            type: PathPrefix
+            value: /stream
+        - path:
+            type: PathPrefix
+            value: /auth
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: agentevals-go
+          port: 8001
+          weight: 1
