@@ -13,6 +13,7 @@
 package api
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -225,11 +226,18 @@ func otlpTracesHandler(store *SessionStore) http.HandlerFunc {
 			return
 		}
 
+		reqBody, status, err := otlpRequestBody(r)
+		if err != nil {
+			http.Error(w, err.Error(), status)
+			return
+		}
+		defer reqBody.Close()
+
 		contentType := r.Header.Get("Content-Type")
 		var body map[string]any
 
 		if strings.Contains(contentType, "application/x-protobuf") {
-			raw, err := io.ReadAll(r.Body)
+			raw, err := io.ReadAll(reqBody)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
@@ -240,7 +248,7 @@ func otlpTracesHandler(store *SessionStore) http.HandlerFunc {
 				return
 			}
 		} else {
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			if err := json.NewDecoder(reqBody).Decode(&body); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -251,6 +259,27 @@ func otlpTracesHandler(store *SessionStore) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"partialSuccess":{}}`))
+	}
+}
+
+// otlpRequestBody returns r's body with its Content-Encoding undone. OTLP/HTTP
+// receivers are expected to accept gzip, and gzip is the default of the
+// OpenTelemetry Collector's otlphttp exporter: without this, every export
+// from a stock collector failed to decode and got a 400, which the exporter
+// treats as permanent and drops. The returned status is only meaningful
+// when err is non-nil.
+func otlpRequestBody(r *http.Request) (io.ReadCloser, int, error) {
+	switch enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc {
+	case "", "identity":
+		return r.Body, 0, nil
+	case "gzip":
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			return nil, http.StatusBadRequest, fmt.Errorf("invalid gzip body: %w", err)
+		}
+		return zr, 0, nil
+	default:
+		return nil, http.StatusUnsupportedMediaType, fmt.Errorf("unsupported Content-Encoding %q", enc)
 	}
 }
 
