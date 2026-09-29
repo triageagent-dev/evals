@@ -262,12 +262,13 @@ func otlpTracesHandler(store *SessionStore) http.HandlerFunc {
 	}
 }
 
-// otlpRequestBody returns r's body with its Content-Encoding undone. OTLP/HTTP
-// receivers are expected to accept gzip, and gzip is the default of the
-// OpenTelemetry Collector's otlphttp exporter: without this, every export
-// from a stock collector failed to decode and got a 400, which the exporter
-// treats as permanent and drops. The returned status is only meaningful
-// when err is non-nil.
+// otlpRequestBody returns r's body with its Content-Encoding undone.
+// Additive over Python: api/otlp_routes.py's receive_traces reads the raw
+// body (request.body()/request.json()) with no decompression, so both
+// implementations rejected gzip. gzip is the default of the OpenTelemetry
+// Collector's otlphttp exporter, so every export from a stock collector
+// failed to decode and got a 400, which the exporter treats as permanent and
+// drops. The returned status is only meaningful when err is non-nil.
 func otlpRequestBody(r *http.Request) (io.ReadCloser, int, error) {
 	switch enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc {
 	case "", "identity":
