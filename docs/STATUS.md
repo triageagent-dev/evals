@@ -36,6 +36,11 @@
   (`ws_server.py`'s `get_or_create_otlp_session`) are all ported. Read back via `GET /api/streaming/sessions`
   (the `{"data": [...]}` envelope + camelCase `SessionInfo` field shape the UI's `LiveStreamingView.tsx`
   actually expects, not a guessed shape) and `GET /api/streaming/get-trace?session_id=`.
+- **`Content-Encoding: gzip` on the OTLP/HTTP receiver** (`internal/api/server.go`'s `otlpRequestBody`) -
+  additive over Python, whose `api/otlp_routes.py` `receive_traces` reads the raw body with no
+  decompression. gzip is the OpenTelemetry Collector `otlphttp` exporter's default, so without it every export
+  from a stock collector got a 400 (dropped by the exporter as a permanent error); an unknown encoding now
+  gets 415 and a body that isn't valid gzip 400. Covered by `internal/api/otlp_http_test.go`.
 - **OTLP/gRPC trace ingestion** (`internal/api/grpc.go`) - `:4317` by default, a `TraceServiceServer`
   implementation (`go.opentelemetry.io/proto/otlp/collector/trace/v1`) sharing the exact same `SessionStore`
   and conversion path (`otlp.ExportRequestToMap` → `ParseExportRequest`) as the HTTP receiver - grpc hands
