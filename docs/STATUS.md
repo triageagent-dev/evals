@@ -147,9 +147,12 @@
   least 0.5 counts as yes; there is one call per invocation and `--judge-samples` is ignored. The overall
   aggregation is unchanged. `hallucinations_v1` splits the response into sentences in Go (following the
   segmenter prompt's rules: one sentence per bullet, a table as one sentence) instead of asking the model, then
-  asks one five-label `choice` question per sentence (supported / unsupported / contradictory / disputed /
-  not_applicable, up to 16 per call) over the same context string; the per-sentence rationale is Jev's
-  confidence, and excerpts are empty. Scores from Jev are therefore not byte-comparable with Gemini/Python runs.
+  asks two questions per sentence over the same context string (up to 8 sentences per call): a yes/no "does it
+  make a factual claim that needs evidence" (below 0.5 it is `not_applicable` - greetings, questions, offers of
+  help, apologies and disclaimers about the assistant's own access) and a `choice` among supported /
+  unsupported / contradictory / disputed. Asking the attribution question separately keeps the validator's
+  "when in doubt, unsupported" strictness from applying to sentences that make no claim. The per-sentence
+  rationale is Jev's probabilities, and excerpts are empty. Scores from Jev are therefore not byte-comparable with Gemini/Python runs.
 - **MCP server** (`cmd/agentevals/mcp.go`, `agentevals mcp`) - a stdio Model Context Protocol server (via
   [`github.com/mark3labs/mcp-go`](https://pkg.go.dev/github.com/mark3labs/mcp-go)), ported from
   `mcp_server.py`'s `create_server`: `list_metrics`, `evaluate_traces` (fully offline - loads trace files

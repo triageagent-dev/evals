@@ -21,9 +21,11 @@ type scriptedDecider struct {
 	// choices answers "choice" questions keyed by question name; a
 	// missing name gets no answer.
 	choices map[string]string
-	calls   int
-	states  []map[string]any
-	qs      []map[string]JevQuestion
+	// namedNouls overrides nouls for specific question names.
+	namedNouls map[string]float64
+	calls      int
+	states     []map[string]any
+	qs         []map[string]JevQuestion
 }
 
 func (d *scriptedDecider) Generate(ctx context.Context, prompt string) (string, error) {
@@ -39,6 +41,10 @@ func (d *scriptedDecider) Decide(ctx context.Context, state map[string]any, ques
 			if c, ok := d.choices[name]; ok {
 				answers[name] = JevAnswer{Type: "choice", Choice: c, Confidence: 0.9}
 			}
+			continue
+		}
+		if p, ok := d.namedNouls[name]; ok {
+			answers[name] = JevAnswer{Type: "noul", Noul: &p}
 			continue
 		}
 		p := d.nouls[d.calls%len(d.nouls)]
@@ -210,13 +216,18 @@ func TestJevSegmentSentences(t *testing.T) {
 }
 
 func TestHallucinationsV1Jev(t *testing.T) {
-	d := &scriptedDecider{choices: map[string]string{
-		"sentence_0": "supported",
-		"sentence_1": "contradictory",
-		"sentence_2": "not_applicable",
-		"sentence_3": "unsupported",
-		// sentence_4 unanswered: not scored, still listed.
-	}}
+	d := &scriptedDecider{
+		nouls: []float64{0.9}, // every sentence is a factual claim...
+		// ...except sentence_2, which is not_applicable whatever its label.
+		namedNouls: map[string]float64{"sentence_2_factual": 0.2},
+		choices: map[string]string{
+			"sentence_0": "supported",
+			"sentence_1": "contradictory",
+			"sentence_2": "unsupported",
+			"sentence_3": "unsupported",
+			// sentence_4 unanswered: not scored, still listed.
+		},
+	}
 	inv := invocation("q", "One is right. Two is wrong. Hello there! Four is unknown. Five is skipped.")
 
 	result, err := HallucinationsV1(context.Background(), d, []adk.Invocation{inv}, 0.5)
@@ -226,8 +237,12 @@ func TestHallucinationsV1Jev(t *testing.T) {
 	if result.Error != "" || result.Score != 0.5 || result.Status != eval.StatusPassed {
 		t.Fatalf("result = %+v, want score 0.5 (2 of 4 labelled sentences) PASSED", result)
 	}
-	if len(d.qs) != 1 || len(d.qs[0]) != 5 || d.qs[0]["sentence_1"].Type != "choice" || len(d.qs[0]["sentence_1"].Criteria) != 5 {
-		t.Fatalf("questions = %+v, want one call with 5 five-label choice questions", d.qs)
+	if len(d.qs) != 1 || len(d.qs[0]) != 10 || d.qs[0]["sentence_1"].Type != "choice" || len(d.qs[0]["sentence_1"].Criteria) != 4 ||
+		d.qs[0]["sentence_1_factual"].Type != "noul" {
+		t.Fatalf("questions = %+v, want one call with a noul and a four-label choice question per sentence", d.qs)
+	}
+	if !strings.Contains(d.qs[0]["sentence_2_factual"].Instructions, "Hello there!") {
+		t.Errorf("sentence_2_factual instructions = %q", d.qs[0]["sentence_2_factual"].Instructions)
 	}
 	if !strings.Contains(d.qs[0]["sentence_1"].Instructions, "Two is wrong.") {
 		t.Errorf("sentence_1 instructions = %q", d.qs[0]["sentence_1"].Instructions)
@@ -236,13 +251,13 @@ func TestHallucinationsV1Jev(t *testing.T) {
 		t.Errorf("state context = %q", ctxStr)
 	}
 	invs := result.Details["per_invocation"].([]map[string]any)
-	if sentences := invs[0]["sentences"].([]map[string]any); len(sentences) != 5 || sentences[1]["label"] != "contradictory" {
+	if sentences := invs[0]["sentences"].([]map[string]any); len(sentences) != 5 || sentences[1]["label"] != "contradictory" || sentences[2]["label"] != "not_applicable" {
 		t.Errorf("sentences detail = %v", sentences)
 	}
 }
 
 func TestHallucinationsV1JevBatches(t *testing.T) {
-	d := &scriptedDecider{choices: map[string]string{}}
+	d := &scriptedDecider{nouls: []float64{0.9}, choices: map[string]string{}}
 	var b strings.Builder
 	for i := 0; i < jevHallucinationBatch+3; i++ {
 		fmt.Fprintf(&b, "Sentence %d. ", i)
@@ -250,7 +265,7 @@ func TestHallucinationsV1JevBatches(t *testing.T) {
 	if _, err := HallucinationsV1(context.Background(), d, []adk.Invocation{invocation("q", b.String())}, 0.5); err != nil {
 		t.Fatal(err)
 	}
-	if len(d.qs) != 2 || len(d.qs[0]) != jevHallucinationBatch || len(d.qs[1]) != 3 {
-		t.Errorf("calls = %d, want 2 batches of %d and 3", len(d.qs), jevHallucinationBatch)
+	if len(d.qs) != 2 || len(d.qs[0]) != 2*jevHallucinationBatch || len(d.qs[1]) != 2*3 {
+		t.Errorf("calls = %d, want 2 batches of %d and 3 sentences (two questions each)", len(d.qs), jevHallucinationBatch)
 	}
 }

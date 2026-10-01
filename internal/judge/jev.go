@@ -321,33 +321,55 @@ func jevSegmentSentences(text string) []string {
 	return sentences
 }
 
-// hallucinationLabelCriteria are the validator prompt's five labels
-// (_HALLUCINATIONS_V1_VALIDATOR_PROMPT), condensed into Jev criteria.
-var hallucinationLabelCriteria = map[string]string{
-	"supported":      "The sentence is fully entailed by the context, with straightforward evidence in it",
-	"unsupported":    "The sentence is not entailed by the context (the default when evidence is not indisputable)",
-	"contradictory":  "The sentence is falsified by the context",
-	"disputed":       "The context contains both supporting and contradicting information",
-	"not_applicable": "The sentence needs no factual attribution: an opinion, planning step, greeting, question, disclaimer or calculation",
+// hallucinationAttributionQuestion asks the validator prompt's first
+// decision on its own: does the sentence need factual attribution at all?
+// Its not_applicable examples (opinions, planning steps, greetings,
+// questions, disclaimers, calculations) are spelled out, including
+// apologies and statements about the assistant's own access, which are
+// disclaimers. Asked separately so the strictness rule below, which in the
+// prompt governs only supported/contradictory/disputed, cannot push a
+// question or a greeting into unsupported.
+var hallucinationAttributionQuestion = JevQuestion{
+	Type: "noul",
+	Instructions: "Does this sentence from an AI assistant's response make a factual claim about the world, a system, " +
+		"data, or past events that would need evidence from the context? Sentence: ",
+	Criteria: map[string]string{
+		"true": "A factual claim that needs evidence: facts about systems, data, results, or what happened before",
+		"false": "Needs no factual attribution: a greeting, question, opinion, planning step, offer of help, " +
+			"apology, or disclaimer about what the assistant itself can or cannot access, find or do, or a calculation",
+	},
 }
 
-// jevHallucinationBatch caps questions per Decisions API call, so a long
-// response is validated in several requests rather than one huge one.
-const jevHallucinationBatch = 16
+// hallucinationLabelCriteria are the validator prompt's four labels for a
+// sentence that does need attribution (_HALLUCINATIONS_V1_VALIDATOR_PROMPT).
+var hallucinationLabelCriteria = map[string]string{
+	"supported":     "The sentence is fully entailed by the context, with straightforward evidence in it",
+	"unsupported":   "The sentence is not entailed by the context (the default when evidence is not indisputable)",
+	"contradictory": "The sentence is falsified by the context",
+	"disputed":      "The context contains both supporting and contradicting information",
+}
+
+// jevHallucinationBatch caps sentences per Decisions API call (two
+// questions each), so a long response is validated in several requests.
+const jevHallucinationBatch = 8
 
 // jevHallucinationResults stands in for hallucinations_v1's two prompts
-// on a Decider: segment in Go (jevSegmentSentences), then ask one
-// "choice" question per sentence with the validator's five labels over
-// the same context string. Rationale carries Jev's confidence, since Jev
-// returns no text; excerpts stay empty.
+// on a Decider: segment in Go (jevSegmentSentences), then per sentence ask
+// whether it needs factual attribution (noul; below 0.5 it is
+// not_applicable) and which of the four attribution labels applies
+// (choice), over the same context string. Rationale carries Jev's
+// confidence, since Jev returns no text; excerpts stay empty.
 func jevHallucinationResults(ctx context.Context, d Decider, nlResponse, contextStr string) ([]hallucinationValidationResult, error) {
 	sentences := jevSegmentSentences(nlResponse)
 	results := make([]hallucinationValidationResult, 0, len(sentences))
 	state := map[string]any{"context": contextStr, "response": nlResponse}
 	for start := 0; start < len(sentences); start += jevHallucinationBatch {
 		end := min(start+jevHallucinationBatch, len(sentences))
-		questions := make(map[string]JevQuestion, end-start)
+		questions := make(map[string]JevQuestion, 2*(end-start))
 		for i := start; i < end; i++ {
+			attribution := hallucinationAttributionQuestion
+			attribution.Instructions += sentences[i]
+			questions[fmt.Sprintf("sentence_%d_factual", i)] = attribution
 			questions[fmt.Sprintf("sentence_%d", i)] = JevQuestion{
 				Type: "choice",
 				Instructions: "Classify this sentence from the response by its relationship with the context. " +
@@ -362,9 +384,15 @@ func jevHallucinationResults(ctx context.Context, d Decider, nlResponse, context
 		}
 		for i := start; i < end; i++ {
 			r := hallucinationValidationResult{Sentence: sentences[i]}
-			if a, ok := answers[fmt.Sprintf("sentence_%d", i)]; ok && a.Choice != "" {
-				r.Label = strings.ToLower(a.Choice)
-				r.Rationale = fmt.Sprintf("Jev label, confidence %.2f", a.Confidence)
+			factual, okF := answers[fmt.Sprintf("sentence_%d_factual", i)]
+			label, okL := answers[fmt.Sprintf("sentence_%d", i)]
+			switch {
+			case okF && factual.Noul != nil && *factual.Noul < jevYesThreshold:
+				r.Label = "not_applicable"
+				r.Rationale = fmt.Sprintf("Jev: no factual claim (p=%.2f)", *factual.Noul)
+			case okF && factual.Noul != nil && okL && label.Choice != "":
+				r.Label = strings.ToLower(label.Choice)
+				r.Rationale = fmt.Sprintf("Jev: factual claim (p=%.2f), %s (confidence %.2f)", *factual.Noul, r.Label, label.Confidence)
 			}
 			results = append(results, r)
 		}
