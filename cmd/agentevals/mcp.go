@@ -142,7 +142,7 @@ func newMCPServer(backend *mcpBackend) *server.MCPServer {
 		mcp.WithString("eval_set_file",
 			mcp.Description("Absolute path to a golden eval set JSON file (ADK EvalSet format). Required by comparison metrics such as tool_trajectory_avg_score and response_match_score.")),
 		mcp.WithString("judge_model",
-			mcp.Description("LLM model name for judge-based metrics, e.g. \"gemini-2.5-flash\", or \"typesafe/jev-1.13\" (OpenRouter Decisions API, needs OPENROUTER_API_KEY on this machine). Required by metrics like hallucinations_v1 and final_response_match_v2.")),
+			mcp.Description("LLM model name for judge-based metrics, e.g. \"gemini-2.5-flash\", or \"jev-1.13\" (Jev Decisions API, needs JEV_API_KEY on this machine). Required by metrics like hallucinations_v1 and final_response_match_v2.")),
 		mcp.WithNumber("threshold", mcp.DefaultNumber(0.5),
 			mcp.Description("Score threshold for PASS/FAIL classification, between 0.0 and 1.0.")),
 		mcp.WithArray("rubrics",

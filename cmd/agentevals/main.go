@@ -135,16 +135,16 @@ Run flags:
   --threshold float              pass/fail threshold applied to every metric (default 0.5)
   --output string                 text | json (default text)
   --judge-api-key string          API key for the judge model's provider: Gemini (falls back to GEMINI_API_KEY/GOOGLE_API_KEY,
-                                    or ADC/Vertex if GOOGLE_GENAI_USE_VERTEXAI=true - no key needed), or OpenRouter
-                                    for typesafe/jev-* models (falls back to OPENROUTER_API_KEY)
-  --judge-model string             judge model for judge-model metrics (default gemini-2.5-flash); typesafe/jev-*
-                                    (e.g. typesafe/jev-1.13) uses OpenRouter's Decisions API instead of prompts (one call
+                                    or ADC/Vertex if GOOGLE_GENAI_USE_VERTEXAI=true - no key needed), or the Decisions
+                                    API for jev-* models (falls back to JEV_API_KEY)
+  --judge-model string             judge model for judge-model metrics (default gemini-2.5-flash); jev-*
+                                    (e.g. jev-1.13) uses the Jev Decisions API instead of prompts (one call
                                     per invocation; --judge-samples is ignored)
   --judge-samples int               samples per invocation for judge-model metrics, majority-voted (default 5)
   --rubric string                  rubric text for rubric_based_*_v1 metrics (repeatable); required by those metrics
 
 Metrics needing a live judge model (final_response_match_v2, hallucinations_v1, rubric_based_final_response_quality_v1,
-rubric_based_tool_use_quality_v1) call Gemini directly, or Jev for --judge-model typesafe/jev-*. Metrics needing
+rubric_based_tool_use_quality_v1) call Gemini directly, or Jev for --judge-model jev-*. Metrics needing
 Vertex AI's Managed Eval Service (safety_v1, multi_turn_task_success_v1, multi_turn_trajectory_quality_v1,
 multi_turn_tool_use_quality_v1) read GOOGLE_CLOUD_PROJECT/GOOGLE_CLOUD_LOCATION and use Application Default Credentials - no API key, ever.
 
@@ -224,8 +224,8 @@ func runCmd(args []string) error {
 	matchTypeFlag := fs.String("trajectory-match-type", "EXACT", "EXACT | IN_ORDER | ANY_ORDER")
 	threshold := fs.Float64("threshold", 0.5, "pass/fail threshold")
 	output := fs.String("output", "text", "text | json")
-	judgeAPIKey := fs.String("judge-api-key", "", "API key for the judge model's provider: Gemini (falls back to GEMINI_API_KEY/GOOGLE_API_KEY, or ADC/Vertex if GOOGLE_GENAI_USE_VERTEXAI=true) or OpenRouter for typesafe/jev-* (falls back to OPENROUTER_API_KEY)")
-	judgeModel := fs.String("judge-model", judge.DefaultModel, "judge model for judge-model metrics (gemini-* or typesafe/jev-*)")
+	judgeAPIKey := fs.String("judge-api-key", "", "API key for the judge model's provider: Gemini (falls back to GEMINI_API_KEY/GOOGLE_API_KEY, or ADC/Vertex if GOOGLE_GENAI_USE_VERTEXAI=true) or the Decisions API for jev-* (falls back to JEV_API_KEY)")
+	judgeModel := fs.String("judge-model", judge.DefaultModel, "judge model for judge-model metrics (gemini-* or jev-*)")
 	judgeSamples := fs.Int("judge-samples", judge.DefaultNumSamples, "samples per invocation for judge-model metrics, aggregated by majority vote")
 	var rubrics metricFlags
 	fs.Var(&rubrics, "rubric", "rubric text for rubric_based_*_v1 metrics (repeatable); required by those metrics")

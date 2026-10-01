@@ -179,7 +179,7 @@ const JUDGE_MODELS = [
   { value: 'gemini-2.0-flash', provider: 'google' },
   { value: 'anthropic/claude-3.5-sonnet', provider: 'anthropic' },
   { value: 'openai/gpt-4o', provider: 'openai' },
-  { value: 'typesafe/jev-1.13', provider: 'openrouter' },
+  { value: 'jev-1.13', provider: 'jev' },
 ] as const;
 
 type JudgeModelProvider = typeof JUDGE_MODELS[number]['provider'];
@@ -488,7 +488,7 @@ export const UploadView: React.FC = () => {
                   { label: 'GOOGLE_API_KEY', provider: 'google' as const },
                   { label: 'ANTHROPIC_API_KEY', provider: 'anthropic' as const },
                   { label: 'OPENAI_API_KEY', provider: 'openai' as const },
-                  { label: 'OPENROUTER_API_KEY', provider: 'openrouter' as const },
+                  { label: 'JEV_API_KEY', provider: 'jev' as const },
                 ] as const).map(({ label, provider }) => {
                   const ok = state.apiKeyStatus![provider];
                   return (
@@ -506,7 +506,7 @@ export const UploadView: React.FC = () => {
               if (!provider || !state.apiKeyStatus || state.apiKeyStatus[provider]) return null;
               const keyName = provider === 'google' ? 'GOOGLE_API_KEY / GEMINI_API_KEY'
                 : provider === 'anthropic' ? 'ANTHROPIC_API_KEY'
-                : provider === 'openrouter' ? 'OPENROUTER_API_KEY'
+                : provider === 'jev' ? 'JEV_API_KEY'
                 : 'OPENAI_API_KEY';
               return (
                 <span style={{ fontSize: '11px', color: 'var(--status-failure)', marginTop: 2 }}>

@@ -56,8 +56,9 @@ func (d *scriptedDecider) Decide(ctx context.Context, state map[string]any, ques
 
 func TestIsJevModel(t *testing.T) {
 	for name, want := range map[string]bool{
-		"typesafe/jev-1.13": true,
-		"typesafe/jev":      true,
+		"jev-1.13":          true,
+		"jev":               true,
+		"typesafe/jev-1.13": true, // full API ID, as saved by earlier runs
 		"gemini-2.5-flash":  false,
 		"openai/gpt-4o":     false,
 	} {
@@ -68,17 +69,17 @@ func TestIsJevModel(t *testing.T) {
 }
 
 func TestNewModelJevNeedsKey(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "")
-	if _, err := NewModel(context.Background(), "", "typesafe/jev-1.13"); err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+	t.Setenv("JEV_API_KEY", "")
+	if _, err := NewModel(context.Background(), "", "jev-1.13"); err == nil || !strings.Contains(err.Error(), "JEV_API_KEY") {
 		t.Fatalf("NewModel without key: err = %v, want missing-key error", err)
 	}
-	t.Setenv("OPENROUTER_API_KEY", "k")
-	m, err := NewModel(context.Background(), "", "typesafe/jev-1.13")
+	t.Setenv("JEV_API_KEY", "k")
+	m, err := NewModel(context.Background(), "", "jev-1.13")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := m.(Decider); !ok {
-		t.Fatalf("NewModel(typesafe/jev-1.13) = %T, want a Decider", m)
+		t.Fatalf("NewModel(jev-1.13) = %T, want a Decider", m)
 	}
 	if _, err := m.Generate(context.Background(), "x"); !errors.Is(err, errNotTextModel) {
 		t.Errorf("Generate err = %v, want errNotTextModel", err)
@@ -104,15 +105,15 @@ func TestJevModelDecideRequestAndRetry(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if body.Model != "typesafe/jev-1.13" || body.State["user_prompt"] != "hi" || body.Questions["q"].Type != "noul" {
+		if body.Model != jevAPINamespace+"jev-1.13" || body.State["user_prompt"] != "hi" || body.Questions["q"].Type != "noul" {
 			t.Errorf("unexpected request body: %+v", body)
 		}
-		w.Write([]byte(`{"answers":{"q":{"type":"noul","noul":0.89}},"model":"typesafe/jev-1.13-20260917"}`))
+		w.Write([]byte(`{"answers":{"q":{"type":"noul","noul":0.89}},"model":"jev-1.13-20260917"}`))
 	}))
 	defer srv.Close()
 
 	t.Setenv("JEV_API_URL", srv.URL)
-	m, err := NewJevModel("secret", "typesafe/jev-1.13")
+	m, err := NewJevModel("secret", "jev-1.13")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func TestJevModelDecideNoRetryOnClientError(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("JEV_API_URL", srv.URL)
-	m, _ := NewJevModel("secret", "typesafe/jev-1.13")
+	m, _ := NewJevModel("secret", "jev-1.13")
 	m.backoff = 0
 	_, err := m.Decide(context.Background(), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "HTTP 401") {
@@ -199,14 +200,14 @@ func TestRubricBasedJev(t *testing.T) {
 
 func TestJevSegmentSentences(t *testing.T) {
 	text := "There are three kinds of fruits:\n1. Apples are red.\n2. Bananas are green. Pears are purple!\n\n" +
-		"| fruit | price |\n|---|---|\n| apple | 1 |\n* Chart kagent-0.7.14 is deployed.\n---\nEnjoy your fruit!"
+		"| fruit | price |\n|---|---|\n| apple | 1 |\n* Chart app-1.2.3 is deployed.\n---\nEnjoy your fruit!"
 	want := []string{
 		"There are three kinds of fruits:",
 		"Apples are red.",
 		"Bananas are green.",
 		"Pears are purple!",
 		"| fruit | price |\n|---|---|\n| apple | 1 |",
-		"Chart kagent-0.7.14 is deployed.",
+		"Chart app-1.2.3 is deployed.",
 		"Enjoy your fruit!",
 	}
 	got := jevSegmentSentences(text)

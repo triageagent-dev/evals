@@ -137,9 +137,9 @@
   on the next `validate` call after one elapses) so a long-running server queried by many distinct tokens
   over time doesn't grow this map unboundedly.
 - **Jev judge model** (`internal/judge/jev.go`) - additive over Python (no equivalent there). A judge model
-  name starting with `typesafe/jev` (e.g. `typesafe/jev-1.13`, via `--judge-model`, the API's per-evaluator
-  `judgeModel`, the MCP `judge_model` argument, or the UI's Judge Model dropdown) routes to OpenRouter's
-  Decisions API (`OPENROUTER_API_KEY` or `--judge-api-key`; endpoint overridable with `JEV_API_URL`) instead
+  name starting with `jev` (e.g. `jev-1.13`, via `--judge-model`, the API's per-evaluator `judgeModel`, the
+  MCP `judge_model` argument, or the UI's Judge Model dropdown) routes to the Jev Decisions API
+  (`JEV_API_KEY` or `--judge-api-key`; endpoint overridable with `JEV_API_URL`) instead
   of Gemini. Jev answers typed questions about a structured state rather than generating text, so the
   google-adk prompt templates are not sent: `final_response_match_v2` asks one yes/no question per invocation
   (state: user prompt, agent response, reference response; instructions condense the original rating

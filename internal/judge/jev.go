@@ -16,8 +16,8 @@ import (
 )
 
 // Jev support is additive over Python (agentevals has no equivalent):
-// TypeSafe's Jev (typesafe/jev-*) is a decision model served through
-// OpenRouter's Decisions API. Unlike a text judge it takes a structured
+// Jev (jev-*) is a decision model served through a Decisions API. Unlike
+// a text judge it takes a structured
 // "state" object plus typed questions and returns typed answers with
 // probabilities - no prompt text, no free-text output. So instead of
 // sending the google-adk prompt templates and parsing the reply, the judge
@@ -30,11 +30,17 @@ import (
 // shape matches jev-bench's run_jev.py.
 
 // JevModelPrefix selects JevModel in NewModel: any judge model name
-// starting with it (e.g. "typesafe/jev-1.13") is routed to the Decisions
-// API instead of google.golang.org/genai.
-const JevModelPrefix = "typesafe/jev"
+// starting with it (e.g. "jev-1.13") is routed to the Decisions API
+// instead of google.golang.org/genai.
+const JevModelPrefix = "jev"
 
-// DefaultJevURL is OpenRouter's Decisions API endpoint.
+// jevAPINamespace is the provider namespace the Decisions API expects in
+// front of the model name ("jev-1.13" is sent as "<namespace>jev-1.13").
+// Names that already carry it are accepted as is, so runs saved with the
+// full ID still re-run.
+const jevAPINamespace = "typesafe/"
+
+// DefaultJevURL is the Decisions API endpoint.
 const DefaultJevURL = "https://openrouter.ai/api/alpha/decisions"
 
 // jevYesThreshold is the noul probability at or above which a yes/no
@@ -43,14 +49,14 @@ const jevYesThreshold = 0.5
 
 // IsJevModel reports whether a judge model name is served by JevModel.
 func IsJevModel(name string) bool {
-	return strings.HasPrefix(name, JevModelPrefix)
+	return strings.HasPrefix(strings.TrimPrefix(name, jevAPINamespace), JevModelPrefix)
 }
 
-// NewModel builds the judge.Model for a model name: JevModel for
-// typesafe/jev-* names, GenAIModel (Gemini) for everything else. apiKey is
-// the explicit key for whichever provider the name selects (empty falls
-// back to that provider's environment: OPENROUTER_API_KEY for Jev, see
-// NewGenAIModel for Gemini).
+// NewModel builds the judge.Model for a model name: JevModel for jev-*
+// names, GenAIModel (Gemini) for everything else. apiKey is the explicit
+// key for whichever provider the name selects (empty falls back to that
+// provider's environment: JEV_API_KEY for Jev, see NewGenAIModel for
+// Gemini).
 func NewModel(ctx context.Context, apiKey, model string) (Model, error) {
 	if IsJevModel(model) {
 		return NewJevModel(apiKey, model)
@@ -88,7 +94,7 @@ type Decider interface {
 // output, so every judge metric must take its Decider path instead.
 var errNotTextModel = errors.New("judge model answers typed questions only and cannot generate free text")
 
-// JevModel is a Decider backed by OpenRouter's Decisions API. It also
+// JevModel is a Decider backed by the Decisions API. It also
 // satisfies Model so it can travel through the same call sites as
 // GenAIModel; its Generate always fails with errNotTextModel.
 type JevModel struct {
@@ -101,14 +107,14 @@ type JevModel struct {
 	backoff time.Duration
 }
 
-// NewJevModel creates a Jev client. apiKey falls back to
-// OPENROUTER_API_KEY; the endpoint can be overridden with JEV_API_URL.
+// NewJevModel creates a Jev client. apiKey falls back to JEV_API_KEY;
+// the endpoint can be overridden with JEV_API_URL.
 func NewJevModel(apiKey, model string) (*JevModel, error) {
 	if apiKey == "" {
-		apiKey = os.Getenv("OPENROUTER_API_KEY")
+		apiKey = os.Getenv("JEV_API_KEY")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("judge model %s needs an OpenRouter API key: set OPENROUTER_API_KEY or pass --judge-api-key", model)
+		return nil, fmt.Errorf("judge model %s needs an API key: set JEV_API_KEY or pass --judge-api-key", model)
 	}
 	url := os.Getenv("JEV_API_URL")
 	if url == "" {
@@ -118,14 +124,14 @@ func NewJevModel(apiKey, model string) (*JevModel, error) {
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 		url:        url,
 		apiKey:     apiKey,
-		model:      model,
+		model:      jevAPINamespace + strings.TrimPrefix(model, jevAPINamespace),
 		backoff:    time.Second,
 	}, nil
 }
 
 // Generate implements Model; see errNotTextModel.
 func (m *JevModel) Generate(ctx context.Context, prompt string) (string, error) {
-	return "", fmt.Errorf("%s: %w", m.model, errNotTextModel)
+	return "", fmt.Errorf("%s: %w", strings.TrimPrefix(m.model, jevAPINamespace), errNotTextModel)
 }
 
 // jevMaxAttempts bounds retries on rate limits, server errors and network
