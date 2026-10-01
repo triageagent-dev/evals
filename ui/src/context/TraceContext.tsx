@@ -6,6 +6,7 @@ export interface ApiKeyStatus {
   google: boolean;
   anthropic: boolean;
   openai: boolean;
+  openrouter?: boolean;
 }
 
 export interface TraceState {

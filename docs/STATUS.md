@@ -136,6 +136,17 @@
   `agentevals auth mint-token` at all. The cache sweeps its own expired entries (at most once per TTL window,
   on the next `validate` call after one elapses) so a long-running server queried by many distinct tokens
   over time doesn't grow this map unboundedly.
+- **Jev judge model** (`internal/judge/jev.go`) - additive over Python (no equivalent there). A judge model
+  name starting with `typesafe/jev` (e.g. `typesafe/jev-1.13`, via `--judge-model`, the API's per-evaluator
+  `judgeModel`, the MCP `judge_model` argument, or the UI's Judge Model dropdown) routes to OpenRouter's
+  Decisions API (`OPENROUTER_API_KEY` or `--judge-api-key`; endpoint overridable with `JEV_API_URL`) instead
+  of Gemini. Jev answers typed questions about a structured state rather than generating text, so the
+  google-adk prompt templates are not sent: `final_response_match_v2` asks one yes/no question per invocation
+  (state: user prompt, agent response, reference response; instructions condense the original rating
+  constitution), and the `rubric_based_*_v1` pair asks one yes/no question per rubric. A probability of at
+  least 0.5 counts as yes; there is one call per invocation and `--judge-samples` is ignored. The overall
+  aggregation is unchanged. `hallucinations_v1` is rejected with a clear error, since its sentence segmenter
+  needs free-text output. Scores from Jev are therefore not byte-comparable with Gemini/Python runs.
 - **MCP server** (`cmd/agentevals/mcp.go`, `agentevals mcp`) - a stdio Model Context Protocol server (via
   [`github.com/mark3labs/mcp-go`](https://pkg.go.dev/github.com/mark3labs/mcp-go)), ported from
   `mcp_server.py`'s `create_server`: `list_metrics`, `evaluate_traces` (fully offline - loads trace files

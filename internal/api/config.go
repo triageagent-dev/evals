@@ -27,6 +27,9 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 				"google":    os.Getenv("GOOGLE_API_KEY") != "" || os.Getenv("GEMINI_API_KEY") != "" || vertexAIConfigured(),
 				"anthropic": os.Getenv("ANTHROPIC_API_KEY") != "",
 				"openai":    os.Getenv("OPENAI_API_KEY") != "",
+				// Additive over Python: typesafe/jev-* judge models (see
+				// internal/judge/jev.go) call OpenRouter's Decisions API.
+				"openrouter": os.Getenv("OPENROUTER_API_KEY") != "",
 			},
 		},
 		"error": nil,

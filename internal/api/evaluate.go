@@ -243,7 +243,7 @@ func newJudgeModelGetter(ctx context.Context) func(string) (judge.Model, error) 
 		if m, ok := judgeClients[modelName]; ok {
 			return m, nil
 		}
-		m, err := judge.NewGenAIModel(ctx, "", modelName)
+		m, err := judge.NewModel(ctx, "", modelName)
 		if err != nil {
 			return nil, fmt.Errorf("setting up judge model %s: %w", modelName, err)
 		}

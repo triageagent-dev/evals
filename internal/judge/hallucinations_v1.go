@@ -204,6 +204,10 @@ func evaluateHallucinationResponse(ctx context.Context, model Model, nlResponse,
 // model (see buildHallucinationContext).
 func HallucinationsV1(ctx context.Context, model Model, actual []adk.Invocation, threshold float64) (eval.Result, error) {
 	const name = "hallucinations_v1"
+	if _, ok := model.(Decider); ok {
+		return eval.Result{MetricName: name, Error: fmt.Sprintf(
+			"Metric '%s' needs a text-generating judge model (its sentence segmenter returns free text); %s models only answer typed questions.", name, JevModelPrefix)}, nil
+	}
 
 	perInvocation := make([]float64, len(actual))
 	// perInvocationDetail is parallel to perInvocation/actual (same index

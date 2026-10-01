@@ -251,6 +251,14 @@ func RubricBasedFinalResponseQualityV1(ctx context.Context, model Model, actual 
 		func(inv adk.Invocation) string {
 			return formatRubricBasedFinalResponseQualityV1Prompt(inv, rubrics)
 		},
+		func(inv adk.Invocation) map[string]any {
+			return map[string]any{
+				"user_input":     inv.UserContent.Text(),
+				"response_steps": toolCallsAndResponsesText(inv.IntermediateData),
+				"final_response": inv.FinalResponse.Text(),
+			}
+		},
+		"final response",
 	)
 }
 
@@ -277,5 +285,12 @@ func RubricBasedToolUseQualityV1(ctx context.Context, model Model, actual []adk.
 		func(inv adk.Invocation) string {
 			return formatRubricBasedToolUseQualityV1Prompt(inv, rubrics)
 		},
+		func(inv adk.Invocation) map[string]any {
+			return map[string]any{
+				"user_input": inv.UserContent.Text(),
+				"tool_usage": toolCallsAndResponsesText(inv.IntermediateData),
+			}
+		},
+		"tool usage",
 	)
 }

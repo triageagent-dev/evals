@@ -69,6 +69,16 @@ export GEMINI_API_KEY=...
   --rubric "The response directly answers the user's question"
 ```
 
+`final_response_match_v2` and the two `rubric_based_*_v1` metrics can also use TypeSafe's Jev decision model through
+OpenRouter's Decisions API (additive over Python; one call per invocation instead of sampled prompts - see
+[docs/STATUS.md](docs/STATUS.md)):
+
+```bash
+export OPENROUTER_API_KEY=...
+./bin/agentevals run samples/helm.json --eval-set samples/eval_set_helm.json \
+  --judge-model typesafe/jev-1.13 -m final_response_match_v2
+```
+
 `safety_v1` and the three `multi_turn_*_v1` metrics always call Vertex AI's Managed Eval Service directly via
 Application Default Credentials, never an API key:
 

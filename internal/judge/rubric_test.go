@@ -222,7 +222,7 @@ func TestAverageRubricScore(t *testing.T) {
 func TestRunRubricMetric_RequiresAtLeastOneRubric(t *testing.T) {
 	model := &scriptedModel{responses: []string{"ID: rubric_0\nProperty: p\nRationale: r\nVerdict: yes\n"}}
 	actual := []adk.Invocation{invocation("q", "a")}
-	_, err := runRubricMetric(context.Background(), model, "rubric_based_final_response_quality_v1", actual, nil, 1, 0.5, func(adk.Invocation) string { return "prompt" })
+	_, err := runRubricMetric(context.Background(), model, "rubric_based_final_response_quality_v1", actual, nil, 1, 0.5, func(adk.Invocation) string { return "prompt" }, nil, "")
 	if err == nil {
 		t.Fatal("expected an error with zero rubrics")
 	}
@@ -234,7 +234,7 @@ func TestRunRubricMetric_AggregatesAcrossInvocationsAndSamples(t *testing.T) {
 	rubrics := RubricsFromStrings([]string{"The response is helpful"})
 	actual := []adk.Invocation{invocation("q1", "a1"), invocation("q2", "a2")}
 
-	result, err := runRubricMetric(context.Background(), model, "rubric_based_final_response_quality_v1", actual, rubrics, 3, 0.5, func(adk.Invocation) string { return "prompt" })
+	result, err := runRubricMetric(context.Background(), model, "rubric_based_final_response_quality_v1", actual, rubrics, 3, 0.5, func(adk.Invocation) string { return "prompt" }, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestRunRubricMetric_AllSamplesUnparseable(t *testing.T) {
 	rubrics := RubricsFromStrings([]string{"anything"})
 	actual := []adk.Invocation{invocation("q", "a")}
 
-	result, err := runRubricMetric(context.Background(), model, "rubric_based_final_response_quality_v1", actual, rubrics, 2, 0.5, func(adk.Invocation) string { return "prompt" })
+	result, err := runRubricMetric(context.Background(), model, "rubric_based_final_response_quality_v1", actual, rubrics, 2, 0.5, func(adk.Invocation) string { return "prompt" }, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
