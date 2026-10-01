@@ -145,8 +145,11 @@
   (state: user prompt, agent response, reference response; instructions condense the original rating
   constitution), and the `rubric_based_*_v1` pair asks one yes/no question per rubric. A probability of at
   least 0.5 counts as yes; there is one call per invocation and `--judge-samples` is ignored. The overall
-  aggregation is unchanged. `hallucinations_v1` is rejected with a clear error, since its sentence segmenter
-  needs free-text output. Scores from Jev are therefore not byte-comparable with Gemini/Python runs.
+  aggregation is unchanged. `hallucinations_v1` splits the response into sentences in Go (following the
+  segmenter prompt's rules: one sentence per bullet, a table as one sentence) instead of asking the model, then
+  asks one five-label `choice` question per sentence (supported / unsupported / contradictory / disputed /
+  not_applicable, up to 16 per call) over the same context string; the per-sentence rationale is Jev's
+  confidence, and excerpts are empty. Scores from Jev are therefore not byte-comparable with Gemini/Python runs.
 - **MCP server** (`cmd/agentevals/mcp.go`, `agentevals mcp`) - a stdio Model Context Protocol server (via
   [`github.com/mark3labs/mcp-go`](https://pkg.go.dev/github.com/mark3labs/mcp-go)), ported from
   `mcp_server.py`'s `create_server`: `list_metrics`, `evaluate_traces` (fully offline - loads trace files

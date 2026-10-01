@@ -69,8 +69,8 @@ export GEMINI_API_KEY=...
   --rubric "The response directly answers the user's question"
 ```
 
-`final_response_match_v2` and the two `rubric_based_*_v1` metrics can also use TypeSafe's Jev decision model through
-OpenRouter's Decisions API (additive over Python; one call per invocation instead of sampled prompts - see
+All four judge metrics can also use TypeSafe's Jev decision model through
+OpenRouter's Decisions API (additive over Python; typed questions instead of sampled prompts - see
 [docs/STATUS.md](docs/STATUS.md)):
 
 ```bash

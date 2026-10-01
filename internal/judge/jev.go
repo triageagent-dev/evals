@@ -9,8 +9,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Jev support is additive over Python (agentevals has no equivalent):
@@ -21,7 +23,10 @@ import (
 // sending the google-adk prompt templates and parsing the reply, the judge
 // metrics that reduce to yes/no verdicts (final_response_match_v2, the
 // rubric_based_*_v1 pair) ask Jev those verdicts directly as "noul"
-// questions; see jevFinalResponseScore and jevRubricScores. The request
+// questions; see jevFinalResponseScore and jevRubricScores.
+// hallucinations_v1 segments the response in Go and asks the validator's
+// five labels as one "choice" question per sentence; see
+// jevHallucinationResults. The request
 // shape matches jev-bench's run_jev.py.
 
 // JevModelPrefix selects JevModel in NewModel: any judge model name
@@ -80,8 +85,7 @@ type Decider interface {
 }
 
 // errNotTextModel is returned by JevModel.Generate: Jev has no free-text
-// output, so a metric that needs one (hallucinations_v1's sentence
-// segmenter) cannot run on it.
+// output, so every judge metric must take its Decider path instead.
 var errNotTextModel = errors.New("judge model answers typed questions only and cannot generate free text")
 
 // JevModel is a Decider backed by OpenRouter's Decisions API. It also
@@ -265,4 +269,105 @@ func jevRubricScores(ctx context.Context, d Decider, state map[string]any, rubri
 		scores[i] = rubricScore{RubricID: r.ID, Score: jevYes(a, ok)}
 	}
 	return scores, nil
+}
+
+// jevBulletRe matches a leading bullet or list marker ("-", "*", "•",
+// "1.", "2)"), which hallucinations_v1's segmenter prompt drops when it
+// splits each bullet into its own sentence.
+var jevBulletRe = regexp.MustCompile(`^\s*(?:[-*•+]|\d+[.)])\s+`)
+
+// jevSentenceEndRe matches sentence-ending punctuation followed by
+// whitespace, so "0.7.14" or "e.g.x" never split.
+var jevSentenceEndRe = regexp.MustCompile(`[.!?]+\s+`)
+
+// jevSegmentSentences splits a response into sentences in Go, standing in
+// for hallucinations_v1's LLM segmenter (Jev cannot return text). It
+// follows the segmenter prompt's rules (hallucinations_v1.py's
+// _HALLUCINATIONS_V1_SEGMENTER_PROMPT): every bullet and sub-bullet is its
+// own sentence, a table is one sentence, text is copied as is, and a
+// piece with no letters or digits is dropped.
+func jevSegmentSentences(text string) []string {
+	var sentences []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if strings.IndexFunc(s, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0 {
+			sentences = append(sentences, s)
+		}
+	}
+
+	var table []string
+	flushTable := func() {
+		if len(table) > 0 {
+			add(strings.Join(table, "\n"))
+			table = nil
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "|") {
+			table = append(table, strings.TrimSpace(line))
+			continue
+		}
+		flushTable()
+		line = jevBulletRe.ReplaceAllString(line, "")
+		start := 0
+		for _, loc := range jevSentenceEndRe.FindAllStringIndex(line, -1) {
+			end := loc[0] + len(strings.TrimRightFunc(line[loc[0]:loc[1]], unicode.IsSpace))
+			add(line[start:end])
+			start = loc[1]
+		}
+		add(line[start:])
+	}
+	flushTable()
+	return sentences
+}
+
+// hallucinationLabelCriteria are the validator prompt's five labels
+// (_HALLUCINATIONS_V1_VALIDATOR_PROMPT), condensed into Jev criteria.
+var hallucinationLabelCriteria = map[string]string{
+	"supported":      "The sentence is fully entailed by the context, with straightforward evidence in it",
+	"unsupported":    "The sentence is not entailed by the context (the default when evidence is not indisputable)",
+	"contradictory":  "The sentence is falsified by the context",
+	"disputed":       "The context contains both supporting and contradicting information",
+	"not_applicable": "The sentence needs no factual attribution: an opinion, planning step, greeting, question, disclaimer or calculation",
+}
+
+// jevHallucinationBatch caps questions per Decisions API call, so a long
+// response is validated in several requests rather than one huge one.
+const jevHallucinationBatch = 16
+
+// jevHallucinationResults stands in for hallucinations_v1's two prompts
+// on a Decider: segment in Go (jevSegmentSentences), then ask one
+// "choice" question per sentence with the validator's five labels over
+// the same context string. Rationale carries Jev's confidence, since Jev
+// returns no text; excerpts stay empty.
+func jevHallucinationResults(ctx context.Context, d Decider, nlResponse, contextStr string) ([]hallucinationValidationResult, error) {
+	sentences := jevSegmentSentences(nlResponse)
+	results := make([]hallucinationValidationResult, 0, len(sentences))
+	state := map[string]any{"context": contextStr, "response": nlResponse}
+	for start := 0; start < len(sentences); start += jevHallucinationBatch {
+		end := min(start+jevHallucinationBatch, len(sentences))
+		questions := make(map[string]JevQuestion, end-start)
+		for i := start; i < end; i++ {
+			questions[fmt.Sprintf("sentence_%d", i)] = JevQuestion{
+				Type: "choice",
+				Instructions: "Classify this sentence from the response by its relationship with the context. " +
+					"Be very strict: unless the context gives straightforward, indisputable evidence, choose unsupported. " +
+					"Do not use world knowledge unless it is truly trivial. Sentence: " + sentences[i],
+				Criteria: hallucinationLabelCriteria,
+			}
+		}
+		answers, err := d.Decide(ctx, state, questions)
+		if err != nil {
+			return nil, err
+		}
+		for i := start; i < end; i++ {
+			r := hallucinationValidationResult{Sentence: sentences[i]}
+			if a, ok := answers[fmt.Sprintf("sentence_%d", i)]; ok && a.Choice != "" {
+				r.Label = strings.ToLower(a.Choice)
+				r.Rationale = fmt.Sprintf("Jev label, confidence %.2f", a.Confidence)
+			}
+			results = append(results, r)
+		}
+	}
+	return results, nil
 }

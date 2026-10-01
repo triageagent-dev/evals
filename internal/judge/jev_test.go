@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,10 +17,13 @@ import (
 // scriptedDecider answers every noul question with the next probability
 // from nouls (cycling), and records each request.
 type scriptedDecider struct {
-	nouls  []float64
-	calls  int
-	states []map[string]any
-	qs     []map[string]JevQuestion
+	nouls []float64
+	// choices answers "choice" questions keyed by question name; a
+	// missing name gets no answer.
+	choices map[string]string
+	calls   int
+	states  []map[string]any
+	qs      []map[string]JevQuestion
 }
 
 func (d *scriptedDecider) Generate(ctx context.Context, prompt string) (string, error) {
@@ -30,7 +34,13 @@ func (d *scriptedDecider) Decide(ctx context.Context, state map[string]any, ques
 	d.states = append(d.states, state)
 	d.qs = append(d.qs, questions)
 	answers := map[string]JevAnswer{}
-	for name := range questions {
+	for name, q := range questions {
+		if q.Type == "choice" {
+			if c, ok := d.choices[name]; ok {
+				answers[name] = JevAnswer{Type: "choice", Choice: c, Confidence: 0.9}
+			}
+			continue
+		}
 		p := d.nouls[d.calls%len(d.nouls)]
 		d.calls++
 		answers[name] = JevAnswer{Type: "noul", Noul: &p}
@@ -181,12 +191,66 @@ func TestRubricBasedJev(t *testing.T) {
 	}
 }
 
-func TestHallucinationsV1RejectsJev(t *testing.T) {
-	result, err := HallucinationsV1(context.Background(), &scriptedDecider{nouls: []float64{1}}, []adk.Invocation{invocation("q", "a")}, 0.5)
+func TestJevSegmentSentences(t *testing.T) {
+	text := "There are three kinds of fruits:\n1. Apples are red.\n2. Bananas are green. Pears are purple!\n\n" +
+		"| fruit | price |\n|---|---|\n| apple | 1 |\n* Chart kagent-0.7.14 is deployed.\n---\nEnjoy your fruit!"
+	want := []string{
+		"There are three kinds of fruits:",
+		"Apples are red.",
+		"Bananas are green.",
+		"Pears are purple!",
+		"| fruit | price |\n|---|---|\n| apple | 1 |",
+		"Chart kagent-0.7.14 is deployed.",
+		"Enjoy your fruit!",
+	}
+	got := jevSegmentSentences(text)
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("jevSegmentSentences =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestHallucinationsV1Jev(t *testing.T) {
+	d := &scriptedDecider{choices: map[string]string{
+		"sentence_0": "supported",
+		"sentence_1": "contradictory",
+		"sentence_2": "not_applicable",
+		"sentence_3": "unsupported",
+		// sentence_4 unanswered: not scored, still listed.
+	}}
+	inv := invocation("q", "One is right. Two is wrong. Hello there! Four is unknown. Five is skipped.")
+
+	result, err := HallucinationsV1(context.Background(), d, []adk.Invocation{inv}, 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Error, "text-generating") {
-		t.Errorf("Error = %q, want a clear unsupported-model error", result.Error)
+	if result.Error != "" || result.Score != 0.5 || result.Status != eval.StatusPassed {
+		t.Fatalf("result = %+v, want score 0.5 (2 of 4 labelled sentences) PASSED", result)
+	}
+	if len(d.qs) != 1 || len(d.qs[0]) != 5 || d.qs[0]["sentence_1"].Type != "choice" || len(d.qs[0]["sentence_1"].Criteria) != 5 {
+		t.Fatalf("questions = %+v, want one call with 5 five-label choice questions", d.qs)
+	}
+	if !strings.Contains(d.qs[0]["sentence_1"].Instructions, "Two is wrong.") {
+		t.Errorf("sentence_1 instructions = %q", d.qs[0]["sentence_1"].Instructions)
+	}
+	if ctxStr, _ := d.states[0]["context"].(string); !strings.Contains(ctxStr, "User prompt:\nq") {
+		t.Errorf("state context = %q", ctxStr)
+	}
+	invs := result.Details["per_invocation"].([]map[string]any)
+	if sentences := invs[0]["sentences"].([]map[string]any); len(sentences) != 5 || sentences[1]["label"] != "contradictory" {
+		t.Errorf("sentences detail = %v", sentences)
+	}
+}
+
+func TestHallucinationsV1JevBatches(t *testing.T) {
+	d := &scriptedDecider{choices: map[string]string{}}
+	var b strings.Builder
+	for i := 0; i < jevHallucinationBatch+3; i++ {
+		fmt.Fprintf(&b, "Sentence %d. ", i)
+	}
+	if _, err := HallucinationsV1(context.Background(), d, []adk.Invocation{invocation("q", b.String())}, 0.5); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.qs) != 2 || len(d.qs[0]) != jevHallucinationBatch || len(d.qs[1]) != 3 {
+		t.Errorf("calls = %d, want 2 batches of %d and 3", len(d.qs), jevHallucinationBatch)
 	}
 }

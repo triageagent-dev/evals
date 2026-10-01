@@ -148,31 +148,27 @@ func parseHallucinationValidationResults(response string) []hallucinationValidat
 // "why" the score came out the way it did. Ported from
 // _evaluate_nl_response; unlike the original port, its per-sentence
 // detail is now returned rather than discarded.
+//
+// On a Decider (Jev) both prompts are replaced by jevHallucinationResults;
+// the scoring below is shared.
 func evaluateHallucinationResponse(ctx context.Context, model Model, nlResponse, contextStr string) (*float64, []hallucinationValidationResult, error) {
-	segResp, err := model.Generate(ctx, fmt.Sprintf(hallucinationsSegmenterPrompt, nlResponse))
-	if err != nil {
-		return nil, nil, fmt.Errorf("segmenter: %w", err)
+	var results []hallucinationValidationResult
+	if d, ok := model.(Decider); ok {
+		var err error
+		results, err = jevHallucinationResults(ctx, d, nlResponse, contextStr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("jev: %w", err)
+		}
+	} else {
+		var err error
+		results, err = generateHallucinationResults(ctx, model, nlResponse, contextStr)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-	sentences := parseHallucinationSentences(segResp)
-	if len(sentences) == 0 {
+	if len(results) == 0 {
 		return nil, nil, nil
 	}
-
-	var sentencesBuilder strings.Builder
-	for i, s := range sentences {
-		if i > 0 {
-			sentencesBuilder.WriteString("\n")
-		}
-		sentencesBuilder.WriteString("<sentence>")
-		sentencesBuilder.WriteString(s)
-		sentencesBuilder.WriteString("</sentence>")
-	}
-
-	valResp, err := model.Generate(ctx, fmt.Sprintf(hallucinationsValidatorPrompt, contextStr, sentencesBuilder.String()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("validator: %w", err)
-	}
-	results := parseHallucinationValidationResults(valResp)
 
 	var scores []float64
 	for _, r := range results {
@@ -194,6 +190,35 @@ func evaluateHallucinationResponse(ctx context.Context, model Model, nlResponse,
 	return &mean, results, nil
 }
 
+// generateHallucinationResults runs the segmenter then validator prompts
+// on a text judge model and parses the per-sentence classifications.
+func generateHallucinationResults(ctx context.Context, model Model, nlResponse, contextStr string) ([]hallucinationValidationResult, error) {
+	segResp, err := model.Generate(ctx, fmt.Sprintf(hallucinationsSegmenterPrompt, nlResponse))
+	if err != nil {
+		return nil, fmt.Errorf("segmenter: %w", err)
+	}
+	sentences := parseHallucinationSentences(segResp)
+	if len(sentences) == 0 {
+		return nil, nil
+	}
+
+	var sentencesBuilder strings.Builder
+	for i, s := range sentences {
+		if i > 0 {
+			sentencesBuilder.WriteString("\n")
+		}
+		sentencesBuilder.WriteString("<sentence>")
+		sentencesBuilder.WriteString(s)
+		sentencesBuilder.WriteString("</sentence>")
+	}
+
+	valResp, err := model.Generate(ctx, fmt.Sprintf(hallucinationsValidatorPrompt, contextStr, sentencesBuilder.String()))
+	if err != nil {
+		return nil, fmt.Errorf("validator: %w", err)
+	}
+	return parseHallucinationValidationResults(valResp), nil
+}
+
 // HallucinationsV1 scores each actual invocation's final response for
 // hallucinations (unsupported/contradictory claims against the
 // invocation's own context) via a two-stage judge-model pipeline, then
@@ -204,10 +229,6 @@ func evaluateHallucinationResponse(ctx context.Context, model Model, nlResponse,
 // model (see buildHallucinationContext).
 func HallucinationsV1(ctx context.Context, model Model, actual []adk.Invocation, threshold float64) (eval.Result, error) {
 	const name = "hallucinations_v1"
-	if _, ok := model.(Decider); ok {
-		return eval.Result{MetricName: name, Error: fmt.Sprintf(
-			"Metric '%s' needs a text-generating judge model (its sentence segmenter returns free text); %s models only answer typed questions.", name, JevModelPrefix)}, nil
-	}
 
 	perInvocation := make([]float64, len(actual))
 	// perInvocationDetail is parallel to perInvocation/actual (same index

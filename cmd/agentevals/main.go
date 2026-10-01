@@ -138,8 +138,8 @@ Run flags:
                                     or ADC/Vertex if GOOGLE_GENAI_USE_VERTEXAI=true - no key needed), or OpenRouter
                                     for typesafe/jev-* models (falls back to OPENROUTER_API_KEY)
   --judge-model string             judge model for judge-model metrics (default gemini-2.5-flash); typesafe/jev-*
-                                    (e.g. typesafe/jev-1.13) uses OpenRouter's Decisions API, one call per invocation,
-                                    and does not support hallucinations_v1
+                                    (e.g. typesafe/jev-1.13) uses OpenRouter's Decisions API instead of prompts (one call
+                                    per invocation; --judge-samples is ignored)
   --judge-samples int               samples per invocation for judge-model metrics, majority-voted (default 5)
   --rubric string                  rubric text for rubric_based_*_v1 metrics (repeatable); required by those metrics
 
