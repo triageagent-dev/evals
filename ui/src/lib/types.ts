@@ -134,13 +134,15 @@ export interface JevTurn {
   user_input: string;
   final_response: string;
   score: number | null;
-  answer?: {
-    type: string;
-    noul?: number;
-    choice?: string;
-    probabilities?: Record<string, number>;
-    confidence?: number;
-  };
+  answer?: JevAnswer;
+}
+
+export interface JevAnswer {
+  type: string;
+  noul?: number;
+  choice?: string;
+  probabilities?: Record<string, number>;
+  confidence?: number;
 }
 
 export type EvaluatorKind = 'algorithm' | 'llm_judge' | 'vertex_judge';
@@ -353,6 +355,11 @@ export interface PersistedHallucinationInvocation {
 export interface ResultDetails {
   comparisons?: PersistedComparison[];
   per_invocation?: PersistedHallucinationInvocation[];
+  // jev_* results (see MetricDetails).
+  question?: string;
+  question_type?: 'noul' | 'choice';
+  expect?: boolean | string;
+  turns?: JevTurn[];
   [key: string]: unknown;
 }
 

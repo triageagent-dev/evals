@@ -5,6 +5,7 @@ import type { MetricResult, Invocation } from '../../lib/types';
 import { getStatusColor } from '../../lib/utils';
 import { EvaluatorKindBadge } from './EvaluatorKindBadge';
 import { HallucinationSentenceDetails } from './HallucinationSentenceDetails';
+import { isJevMetric, jevPassingAnswer, jevTurns, jevVerdict } from '../../lib/jev';
 
 interface MetricsComparisonSectionProps {
   metricResults: MetricResult[];
@@ -16,10 +17,6 @@ interface MetricsComparisonSectionProps {
   allActualInvocations?: Invocation[];
   allExpectedInvocations?: Invocation[];
 }
-
-// isJevMetric matches the jev_* eval family (internal/decision): built-ins
-// are "jev_<name>", custom questions "jev:<key>".
-const isJevMetric = (name: string) => name.startsWith('jev_') || name.startsWith('jev:');
 
 export const MetricsComparisonSection: React.FC<MetricsComparisonSectionProps> = ({
   metricResults,
@@ -50,12 +47,12 @@ export const MetricsComparisonSection: React.FC<MetricsComparisonSectionProps> =
     // jev_* metrics need no eval set: show the question and passing answer.
     if (isJevMetric(metric.metricName)) {
       const d = metric.details;
-      const pass = d?.question_type === 'choice' ? `"${d.expect}"` : d?.expect === false ? 'no' : 'yes';
+      const pass = jevPassingAnswer(d?.question_type, d?.expect);
       return {
         expected: d?.question ? (
           <div>
             <div>{d.question}</div>
-            <div css={scoreDisplayStyles}>Passing answer: {pass}</div>
+            {d.question_type && <div css={scoreDisplayStyles}>Passing answer: {pass}</div>}
           </div>
         ) : 'N/A',
         actual: metric.score !== null ? (
@@ -235,19 +232,10 @@ export const MetricsComparisonSection: React.FC<MetricsComparisonSectionProps> =
         </div>
       );
     }
-    if (isJevMetric(result.metricName) && result.details?.turns) {
-      const turn = result.details.turns[idx];
+    if (isJevMetric(result.metricName)) {
+      const turn = jevTurns(result.details as Record<string, unknown> | null | undefined)[idx];
       if (!turn) return null;
-      const a = turn.answer;
-      const verdict = !a
-        ? 'Jev gave no answer for this turn'
-        : a.type === 'noul' && a.noul !== undefined
-          ? `Jev: p(yes) = ${a.noul.toFixed(2)}`
-          : a.choice
-            ? `Jev picked "${a.choice}"` + (a.probabilities
-              ? ' · ' + Object.entries(a.probabilities).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ')
-              : '')
-            : 'Jev answer could not be read';
+      const verdict = jevVerdict(turn.answer);
       return (
         <>
           <div css={miniComparisonGridStyles}>
@@ -260,7 +248,7 @@ export const MetricsComparisonSection: React.FC<MetricsComparisonSectionProps> =
               <div css={miniTextStyles}>{turn.final_response ? truncateText(turn.final_response, 200) : <span css={emptyTextStyles}>(no response)</span>}</div>
             </div>
           </div>
-          <div css={diffHintStyles}>{verdict}</div>
+          <div css={jevVerdictStyles}>{verdict}</div>
         </>
       );
     }
@@ -723,4 +711,11 @@ const diffHintStyles = css`
   font-size: 0.688rem;
   color: var(--status-failure);
   font-style: italic;
+`;
+
+const jevVerdictStyles = css`
+  margin-top: 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
 `;

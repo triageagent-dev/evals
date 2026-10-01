@@ -12,6 +12,7 @@ import {
 import type { Run, RunResultRow, ResultStatus2, ToolCallComparison, HallucinationSentence } from '../../lib/types';
 import { getRun, getRunResults, StorageUnavailableError } from '../../api/client';
 import { STATUS_COLORS, formatDuration, formatTimestamp, passRate, runDurationMs } from './runHistory';
+import { isJevMetric, jevPassingAnswer, jevTurns, jevVerdict } from '../../lib/jev';
 
 interface RunDetailViewProps {
   runId: string;
@@ -199,8 +200,12 @@ export const RunDetailView: React.FC<RunDetailViewProps> = ({ runId, onBack }) =
                     const meta = RESULT_STATUS[row.status];
                     const Icon = meta.Icon;
                     const comparisons = row.details?.comparisons ?? [];
-                    const hallucinationInvocations = row.details?.per_invocation ?? [];
-                    const isExpandable = comparisons.length > 0 || hallucinationInvocations.length > 0;
+                    const isJev = isJevMetric(row.evaluatorName);
+                    // jev_* rows: the first jev release stored its per-turn
+                    // detail under per_invocation too, in a different shape.
+                    const hallucinationInvocations = isJev ? [] : row.details?.per_invocation ?? [];
+                    const turns = isJev ? jevTurns(row.details) : [];
+                    const isExpandable = comparisons.length > 0 || hallucinationInvocations.length > 0 || turns.length > 0;
                     const isOpen = expanded.has(row.resultId);
                     return (
                       <div key={row.resultId} css={resultRowStyle}>
@@ -271,6 +276,39 @@ export const RunDetailView: React.FC<RunDetailViewProps> = ({ runId, onBack }) =
                             ))}
                           </div>
                         )}
+                        {isOpen && turns.length > 0 && (
+                          <div css={comparisonsStyle}>
+                            {row.details?.question && (
+                              <div css={sentenceRationaleStyle}>
+                                {row.details.question}
+                                {row.details.question_type && ` Passing answer: ${jevPassingAnswer(row.details.question_type, row.details.expect)}.`}
+                              </div>
+                            )}
+                            {turns.map((t, idx) => (
+                              <div key={t.invocation_id || idx} css={invocationStyle}>
+                                <div css={invocationHeadStyle}>
+                                  invocation {idx + 1}
+                                  {t.score !== null && (
+                                    <span css={subtleMonoStyle}>score {t.score.toFixed(2)}</span>
+                                  )}
+                                </div>
+                                {(t.user_input || t.final_response) && (
+                                  <div css={diffGridStyle}>
+                                    <div>
+                                      <div css={diffLabelStyle}>User</div>
+                                      <div css={monoStyle}>{t.user_input || '(no text)'}</div>
+                                    </div>
+                                    <div>
+                                      <div css={diffLabelStyle}>Agent</div>
+                                      <div css={monoStyle}>{t.final_response || '(no response)'}</div>
+                                    </div>
+                                  </div>
+                                )}
+                                <div css={sentenceRationaleStyle}>{jevVerdict(t.answer)}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         {isOpen && hallucinationInvocations.length > 0 && (
                           <div css={comparisonsStyle}>
                             {hallucinationInvocations.map((inv, idx) => (
@@ -281,7 +319,7 @@ export const RunDetailView: React.FC<RunDetailViewProps> = ({ runId, onBack }) =
                                     <span css={subtleMonoStyle}>score {inv.score.toFixed(2)}</span>
                                   )}
                                 </div>
-                                {inv.sentences.length === 0 ? (
+                                {(inv.sentences ?? []).length === 0 ? (
                                   <div css={subtleMonoStyle}>(no sentence-level detail from the judge)</div>
                                 ) : (
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
