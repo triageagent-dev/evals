@@ -121,6 +121,26 @@ export interface MetricDetails {
   // the same rendering logic works for both the live /api/evaluate
   // response and GET /api/runs/{id}/results).
   per_invocation?: PersistedHallucinationInvocation[];
+  // jev_* metrics (internal/decision): the question Jev was asked, its
+  // type and passing answer, and per turn what Jev saw and answered.
+  question?: string;
+  question_type?: 'noul' | 'choice';
+  expect?: boolean | string;
+  turns?: JevTurn[];
+}
+
+export interface JevTurn {
+  invocation_id: string;
+  user_input: string;
+  final_response: string;
+  score: number | null;
+  answer?: {
+    type: string;
+    noul?: number;
+    choice?: string;
+    probabilities?: Record<string, number>;
+    confidence?: number;
+  };
 }
 
 export type EvaluatorKind = 'algorithm' | 'llm_judge' | 'vertex_judge';

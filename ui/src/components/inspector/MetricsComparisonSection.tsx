@@ -17,6 +17,10 @@ interface MetricsComparisonSectionProps {
   allExpectedInvocations?: Invocation[];
 }
 
+// isJevMetric matches the jev_* eval family (internal/decision): built-ins
+// are "jev_<name>", custom questions "jev:<key>".
+const isJevMetric = (name: string) => name.startsWith('jev_') || name.startsWith('jev:');
+
 export const MetricsComparisonSection: React.FC<MetricsComparisonSectionProps> = ({
   metricResults,
   expectedInvocation,
@@ -43,6 +47,26 @@ export const MetricsComparisonSection: React.FC<MetricsComparisonSectionProps> =
   const getMetricComparison = (
     metric: MetricResult
   ): { expected: React.ReactNode; actual: React.ReactNode } => {
+    // jev_* metrics need no eval set: show the question and passing answer.
+    if (isJevMetric(metric.metricName)) {
+      const d = metric.details;
+      const pass = d?.question_type === 'choice' ? `"${d.expect}"` : d?.expect === false ? 'no' : 'yes';
+      return {
+        expected: d?.question ? (
+          <div>
+            <div>{d.question}</div>
+            <div css={scoreDisplayStyles}>Passing answer: {pass}</div>
+          </div>
+        ) : 'N/A',
+        actual: metric.score !== null ? (
+          <div>
+            <div>Mean probability of the passing answer</div>
+            <div css={scoreDisplayStyles}>Score: {metric.score.toFixed(2)}</div>
+          </div>
+        ) : 'N/A',
+      };
+    }
+
     if (!expectedInvocation || !actualInvocation) {
       return {
         expected: 'No eval set',
@@ -209,6 +233,35 @@ export const MetricsComparisonSection: React.FC<MetricsComparisonSectionProps> =
             <div css={miniTextStyles}>{actualText}</div>
           </div>
         </div>
+      );
+    }
+    if (isJevMetric(result.metricName) && result.details?.turns) {
+      const turn = result.details.turns[idx];
+      if (!turn) return null;
+      const a = turn.answer;
+      const verdict = !a
+        ? 'Jev gave no answer for this turn'
+        : a.type === 'noul' && a.noul !== undefined
+          ? `Jev: p(yes) = ${a.noul.toFixed(2)}`
+          : a.choice
+            ? `Jev picked "${a.choice}"` + (a.probabilities
+              ? ' · ' + Object.entries(a.probabilities).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(', ')
+              : '')
+            : 'Jev answer could not be read';
+      return (
+        <>
+          <div css={miniComparisonGridStyles}>
+            <div>
+              <div css={miniColumnLabelStyles}>User</div>
+              <div css={miniTextStyles}>{turn.user_input ? truncateText(turn.user_input, 200) : <span css={emptyTextStyles}>(no text)</span>}</div>
+            </div>
+            <div>
+              <div css={miniColumnLabelStyles}>Agent</div>
+              <div css={miniTextStyles}>{turn.final_response ? truncateText(turn.final_response, 200) : <span css={emptyTextStyles}>(no response)</span>}</div>
+            </div>
+          </div>
+          <div css={diffHintStyles}>{verdict}</div>
+        </>
       );
     }
     if (result.metricName === 'hallucinations_v1' && result.details?.per_invocation) {

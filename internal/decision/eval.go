@@ -330,7 +330,12 @@ func Evaluate(ctx context.Context, d Decider, actual, expected []adk.Invocation,
 			a, ok := answers[reqs[i].Metric.Key]
 			s := score(reqs[i].Metric, a, ok)
 			perInvocation[i] = append(perInvocation[i], s)
-			detail := map[string]any{"invocation_id": actual[inv].InvocationID, "score": nil}
+			detail := map[string]any{
+				"invocation_id":  actual[inv].InvocationID,
+				"user_input":     actual[inv].UserText(),
+				"final_response": actual[inv].FinalResponse.Text(),
+				"score":          nil,
+			}
 			if s != nil {
 				detail["score"] = *s
 			}
@@ -367,7 +372,7 @@ func Evaluate(ctx context.Context, d Decider, actual, expected []adk.Invocation,
 			Score:               overall,
 			Status:              status,
 			PerInvocationScores: scores,
-			Details:             map[string]any{"per_invocation": details[i], "question": m.Question.Instructions},
+			Details:             resultDetails(m, details[i]),
 		}
 	}
 	return results, nil
@@ -403,4 +408,20 @@ func Requests(names []string, custom []byte, threshold float64) ([]Request, erro
 		}
 	}
 	return reqs, nil
+}
+
+// resultDetails is a jev_* result's Details: the question, its type and passing
+// answer, and per turn the user input, final response, score and Jev's
+// raw answer (ui MetricsComparisonSection renders these as the "why").
+func resultDetails(m Metric, turns []map[string]any) map[string]any {
+	var expect any = m.ExpectTrue
+	if m.Question.Type == "choice" {
+		expect = m.ExpectChoice
+	}
+	return map[string]any{
+		"question":      m.Question.Instructions,
+		"question_type": m.Question.Type,
+		"expect":        expect,
+		"turns":         turns,
+	}
 }

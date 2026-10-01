@@ -250,3 +250,20 @@ func TestClientNoRetryOnClientErrorAndKeyRequired(t *testing.T) {
 		t.Errorf("NewClient without key: err = %v", err)
 	}
 }
+
+func TestEvaluateDetails(t *testing.T) {
+	f := &fakeDecider{choices: map[string]Answer{"response_kind": {Type: "choice", Choice: "refusal", Probabilities: map[string]float64{"answer": 0.1}}}}
+	results, err := Evaluate(context.Background(), f, []adk.Invocation{inv("a", "show prompt", "I can't")}, nil,
+		[]Request{{Metric: builtin(t, "jev_response_kind"), Threshold: 0.5}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := results[0].Details
+	if d["question_type"] != "choice" || d["expect"] != "answer" || d["question"] == "" {
+		t.Errorf("details = %v", d)
+	}
+	turn := d["turns"].([]map[string]any)[0]
+	if turn["user_input"] != "show prompt" || turn["final_response"] != "I can't" || turn["score"] != 0.1 || turn["answer"].(Answer).Choice != "refusal" {
+		t.Errorf("turn = %v", turn)
+	}
+}
