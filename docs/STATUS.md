@@ -136,23 +136,18 @@
   `agentevals auth mint-token` at all. The cache sweeps its own expired entries (at most once per TTL window,
   on the next `validate` call after one elapses) so a long-running server queried by many distinct tokens
   over time doesn't grow this map unboundedly.
-- **Jev judge model** (`internal/judge/jev.go`) - additive over Python (no equivalent there). A judge model
-  name starting with `jev` (e.g. `jev-1.13`, via `--judge-model`, the API's per-evaluator `judgeModel`, the
-  MCP `judge_model` argument, or the UI's Judge Model dropdown) routes to the Jev Decisions API
-  (`JEV_API_KEY` or `--judge-api-key`; endpoint overridable with `JEV_API_URL`) instead
-  of Gemini. Jev answers typed questions about a structured state rather than generating text, so the
-  google-adk prompt templates are not sent: `final_response_match_v2` asks one yes/no question per invocation
-  (state: user prompt, agent response, reference response; instructions condense the original rating
-  constitution), and the `rubric_based_*_v1` pair asks one yes/no question per rubric. A probability of at
-  least 0.5 counts as yes; there is one call per invocation and `--judge-samples` is ignored. The overall
-  aggregation is unchanged. `hallucinations_v1` splits the response into sentences in Go (following the
-  segmenter prompt's rules: one sentence per bullet, a table as one sentence) instead of asking the model, then
-  asks two questions per sentence over the same context string (up to 8 sentences per call): a yes/no "does it
-  make a factual claim that needs evidence" (below 0.5 it is `not_applicable` - greetings, questions, offers of
-  help, apologies and disclaimers about the assistant's own access) and a `choice` among supported /
-  unsupported / contradictory / disputed. Asking the attribution question separately keeps the validator's
-  "when in doubt, unsupported" strictness from applying to sentences that make no claim. The per-sentence
-  rationale is Jev's probabilities, and excerpts are empty. Scores from Jev are therefore not byte-comparable with Gemini/Python runs.
+- **Jev eval family** (`internal/decision`, `jev_*` metrics) - additive over Python. Jev is a decision model:
+  it reads a structured state and answers typed questions (`noul`, a probability of true, or `choice`, a label
+  with probabilities) and returns no text, so instead of adapting the google-adk judge prompts this is its own
+  family. The state per invocation is the user input, final response, tool calls paired with their results,
+  up to five earlier turns of the same trace, and the reference response when an eval set matched. Built-ins:
+  `jev_task_resolved`, `jev_grounded`, `jev_tool_use_appropriate`, `jev_matches_reference` (needs an eval
+  set) and `jev_response_kind`; custom questions (`jev:<key>`) come from `--jev-questions`, the MCP
+  `jev_questions_file` argument, or a `jev_custom` evaluator's `questions` field in `POST /api/evaluate`.
+  One Decisions API call per invocation answers every selected question. Score = mean probability of the
+  passing answer over the invocations answered (unanswered invocations are skipped; none answered is
+  NOT_EVALUATED). `JEV_API_KEY` is required, `JEV_MODEL` (default `jev-1.13`) and `JEV_API_URL` are optional.
+  The ADK judge metrics are unchanged and Gemini-only.
 - **MCP server** (`cmd/agentevals/mcp.go`, `agentevals mcp`) - a stdio Model Context Protocol server (via
   [`github.com/mark3labs/mcp-go`](https://pkg.go.dev/github.com/mark3labs/mcp-go)), ported from
   `mcp_server.py`'s `create_server`: `list_metrics`, `evaluate_traces` (fully offline - loads trace files

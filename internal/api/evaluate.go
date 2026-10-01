@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/triageagent-dev/agentevals-go/internal/adk"
+	"github.com/triageagent-dev/agentevals-go/internal/decision"
 	"github.com/triageagent-dev/agentevals-go/internal/eval"
 	"github.com/triageagent-dev/agentevals-go/internal/judge"
 	"github.com/triageagent-dev/agentevals-go/internal/loader"
@@ -40,6 +41,9 @@ type evaluatorConfigDTO struct {
 	// yet - so this field is additive/backend-only for now, usable by
 	// direct API callers.
 	Rubrics []string `json:"rubrics,omitempty"`
+	// Questions is the jev_custom evaluator's question set (see
+	// decision.ParseCustom). Additive over Python, backend-only.
+	Questions json.RawMessage `json:"questions,omitempty"`
 }
 
 // evalConfigDTO is POST /api/evaluate's "config" form field, matching
@@ -146,6 +150,8 @@ func metricKind(name string) string {
 		return "llm_judge"
 	case vertexEvalMetrics[name]:
 		return "vertex_judge"
+	case decision.IsMetric(name):
+		return "llm_judge"
 	default:
 		return "algorithm"
 	}
@@ -243,7 +249,7 @@ func newJudgeModelGetter(ctx context.Context) func(string) (judge.Model, error) 
 		if m, ok := judgeClients[modelName]; ok {
 			return m, nil
 		}
-		m, err := judge.NewModel(ctx, "", modelName)
+		m, err := judge.NewGenAIModel(ctx, "", modelName)
 		if err != nil {
 			return nil, fmt.Errorf("setting up judge model %s: %w", modelName, err)
 		}
@@ -373,7 +379,7 @@ func evaluateHandler(store *SQLiteStore) http.HandlerFunc {
 
 		result := runResultDTO{Errors: req.loadErrors}
 		for _, tr := range req.traces {
-			result.TraceResults = append(result.TraceResults, evaluateOneTrace(ctx, tr, req.cfg.Evaluators, req.evalSet, getJudgeModel, getVertexEvalClient, nil))
+			result.TraceResults = append(result.TraceResults, evaluateOneTrace(ctx, tr, req.cfg.Evaluators, req.evalSet, getJudgeModel, getVertexEvalClient, newDecisionClientGetter(), nil))
 		}
 
 		if store != nil {
@@ -441,6 +447,7 @@ func evaluateStreamHandler(store *SQLiteStore) http.HandlerFunc {
 
 			getJudgeModel := newJudgeModelGetter(ctx)
 			getVertexEvalClient := newVertexEvalClientGetter(ctx)
+			getDecisionClient := newDecisionClientGetter()
 			total := len(req.traces)
 			events <- map[string]any{"message": fmt.Sprintf("Evaluating %d trace(s)...", total)}
 
@@ -448,7 +455,7 @@ func evaluateStreamHandler(store *SQLiteStore) http.HandlerFunc {
 			for idx, tr := range req.traces {
 				events <- map[string]any{"message": fmt.Sprintf("Trace %d/%d: %s", idx+1, total, tr.TraceID)}
 
-				traceResult := evaluateOneTrace(ctx, tr, req.cfg.Evaluators, req.evalSet, getJudgeModel, getVertexEvalClient, func(partial traceResultDTO) {
+				traceResult := evaluateOneTrace(ctx, tr, req.cfg.Evaluators, req.evalSet, getJudgeModel, getVertexEvalClient, getDecisionClient, func(partial traceResultDTO) {
 					events <- map[string]any{"traceProgress": map[string]any{
 						"traceId":       partial.TraceID,
 						"partialResult": partial,
@@ -512,6 +519,7 @@ func evaluateOneTrace(
 	evalSet *adk.EvalSet,
 	getJudgeModel func(string) (judge.Model, error),
 	getVertexEvalClient func() (*vertexeval.Client, error),
+	getDecisionClient func() (*decision.Client, error),
 	onMetric func(traceResultDTO),
 ) traceResultDTO {
 	conv := adk.ConvertTrace(tr)
@@ -534,8 +542,16 @@ func evaluateOneTrace(
 	}
 
 	expected := eval.FindExpectedInvocations(conv.Invocations, evalSet)
+	decisionResults, decisionModel := runDecisionEvaluators(ctx, evaluators, conv.Invocations, expected, getDecisionClient)
 
-	for _, evaluator := range evaluators {
+	for i, evaluator := range evaluators {
+		if results, ok := decisionResults[i]; ok {
+			for _, r := range results {
+				traceResult.MetricResults = append(traceResult.MetricResults, toMetricResultDTO(r, "llm_judge", decisionModel))
+				notifyMetric(traceResult, onMetric)
+			}
+			continue
+		}
 		if evaluator.Type != "" && evaluator.Type != "builtin" {
 			traceResult.MetricResults = append(traceResult.MetricResults, toMetricResultDTO(eval.Result{
 				MetricName: evaluator.Name,

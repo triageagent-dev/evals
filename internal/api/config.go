@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+
+	"github.com/triageagent-dev/agentevals-go/internal/decision"
 )
 
 // configHandler implements GET /api/config, ported from api/routes.py's
@@ -27,8 +29,7 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 				"google":    os.Getenv("GOOGLE_API_KEY") != "" || os.Getenv("GEMINI_API_KEY") != "" || vertexAIConfigured(),
 				"anthropic": os.Getenv("ANTHROPIC_API_KEY") != "",
 				"openai":    os.Getenv("OPENAI_API_KEY") != "",
-				// Additive over Python: jev-* judge models (see
-				// internal/judge/jev.go) call the Jev Decisions API.
+				// Additive over Python: the jev_* metrics (internal/decision).
 				"jev": os.Getenv("JEV_API_KEY") != "",
 			},
 		},
@@ -75,6 +76,17 @@ var workingMetrics = map[string]bool{
 	"multi_turn_task_success_v1":             true,
 	"multi_turn_trajectory_quality_v1":       true,
 	"multi_turn_tool_use_quality_v1":         true,
+}
+
+func init() {
+	// The jev_* family (internal/decision) is additive over Python: listed
+	// after the ADK metrics so the UI's metric picker offers the built-ins.
+	for _, m := range decision.Builtins {
+		allMetrics = append(allMetrics, metricInfo{
+			Name: m.Name, Category: "jev", RequiresEvalSet: m.NeedsReference, RequiresLLM: true, Description: m.Description,
+		})
+		workingMetrics[m.Name] = true
+	}
 }
 
 // allMetrics is every metric name google-adk's DEFAULT_METRIC_EVALUATOR_REGISTRY

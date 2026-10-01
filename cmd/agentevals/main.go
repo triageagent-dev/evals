@@ -13,6 +13,7 @@ import (
 
 	"github.com/triageagent-dev/agentevals-go/internal/adk"
 	"github.com/triageagent-dev/agentevals-go/internal/api"
+	"github.com/triageagent-dev/agentevals-go/internal/decision"
 	"github.com/triageagent-dev/agentevals-go/internal/eval"
 	"github.com/triageagent-dev/agentevals-go/internal/judge"
 	tracepkg "github.com/triageagent-dev/agentevals-go/internal/trace"
@@ -134,19 +135,24 @@ Run flags:
   --trajectory-match-type value EXACT | IN_ORDER | ANY_ORDER (default EXACT)
   --threshold float              pass/fail threshold applied to every metric (default 0.5)
   --output string                 text | json (default text)
-  --judge-api-key string          API key for the judge model's provider: Gemini (falls back to GEMINI_API_KEY/GOOGLE_API_KEY,
-                                    or ADC/Vertex if GOOGLE_GENAI_USE_VERTEXAI=true - no key needed), or the Decisions
-                                    API for jev-* models (falls back to JEV_API_KEY)
-  --judge-model string             judge model for judge-model metrics (default gemini-2.5-flash); jev-*
-                                    (e.g. jev-1.13) uses the Jev Decisions API instead of prompts (one call
-                                    per invocation; --judge-samples is ignored)
+  --judge-api-key string          Gemini API key for judge-model metrics (falls back to GEMINI_API_KEY/GOOGLE_API_KEY,
+                                    or ADC/Vertex if GOOGLE_GENAI_USE_VERTEXAI=true - no key needed)
+  --judge-model string             judge model for judge-model metrics (default gemini-2.5-flash)
   --judge-samples int               samples per invocation for judge-model metrics, majority-voted (default 5)
   --rubric string                  rubric text for rubric_based_*_v1 metrics (repeatable); required by those metrics
+  --jev-questions string           custom question file for the Jev eval; each question runs as a jev:<key> metric
+  --jev-api-key string             API key for jev_* metrics (falls back to JEV_API_KEY)
+  --jev-model string               Jev model for jev_* metrics (falls back to JEV_MODEL, default jev-1.13)
 
 Metrics needing a live judge model (final_response_match_v2, hallucinations_v1, rubric_based_final_response_quality_v1,
-rubric_based_tool_use_quality_v1) call Gemini directly, or Jev for --judge-model jev-*. Metrics needing
-Vertex AI's Managed Eval Service (safety_v1, multi_turn_task_success_v1, multi_turn_trajectory_quality_v1,
-multi_turn_tool_use_quality_v1) read GOOGLE_CLOUD_PROJECT/GOOGLE_CLOUD_LOCATION and use Application Default Credentials - no API key, ever.
+rubric_based_tool_use_quality_v1) call Gemini directly. Metrics needing Vertex AI's Managed Eval Service (safety_v1,
+multi_turn_task_success_v1, multi_turn_trajectory_quality_v1, multi_turn_tool_use_quality_v1) read
+GOOGLE_CLOUD_PROJECT/GOOGLE_CLOUD_LOCATION and use Application Default Credentials - no API key, ever.
+
+Jev metrics (jev_task_resolved, jev_grounded, jev_tool_use_appropriate, jev_matches_reference [needs --eval-set],
+jev_response_kind, and custom questions via --jev-questions) send each invocation to the Jev decision model as a
+structured state with typed questions, one call per invocation for all of them. A metric's score is the mean
+probability Jev gives the passing answer.
 
 Only trace files in Jaeger JSON format, from ADK-instrumented (gcp.vertex.agent.*) traces, are supported today.
 See README.md for what agentevals (Python) supports that this port does not yet.
@@ -188,6 +194,9 @@ var runFlagsWithValue = map[string]bool{
 	"judge-model":           true,
 	"judge-samples":         true,
 	"rubric":                true,
+	"jev-questions":         true,
+	"jev-api-key":           true,
+	"jev-model":             true,
 }
 
 // splitPositional separates positional arguments (trace file paths) from
@@ -224,11 +233,14 @@ func runCmd(args []string) error {
 	matchTypeFlag := fs.String("trajectory-match-type", "EXACT", "EXACT | IN_ORDER | ANY_ORDER")
 	threshold := fs.Float64("threshold", 0.5, "pass/fail threshold")
 	output := fs.String("output", "text", "text | json")
-	judgeAPIKey := fs.String("judge-api-key", "", "API key for the judge model's provider: Gemini (falls back to GEMINI_API_KEY/GOOGLE_API_KEY, or ADC/Vertex if GOOGLE_GENAI_USE_VERTEXAI=true) or the Decisions API for jev-* (falls back to JEV_API_KEY)")
-	judgeModel := fs.String("judge-model", judge.DefaultModel, "judge model for judge-model metrics (gemini-* or jev-*)")
+	judgeAPIKey := fs.String("judge-api-key", "", "Gemini API key for judge-model metrics; falls back to GEMINI_API_KEY/GOOGLE_API_KEY, or ADC/Vertex if GOOGLE_GENAI_USE_VERTEXAI=true")
+	judgeModel := fs.String("judge-model", judge.DefaultModel, "judge model for judge-model metrics")
 	judgeSamples := fs.Int("judge-samples", judge.DefaultNumSamples, "samples per invocation for judge-model metrics, aggregated by majority vote")
 	var rubrics metricFlags
 	fs.Var(&rubrics, "rubric", "rubric text for rubric_based_*_v1 metrics (repeatable); required by those metrics")
+	jevQuestions := fs.String("jev-questions", "", "custom question file for the Jev eval (runs as jev:<key> metrics)")
+	jevAPIKey := fs.String("jev-api-key", "", "API key for jev_* metrics; falls back to JEV_API_KEY")
+	jevModel := fs.String("jev-model", "", "Jev model for jev_* metrics; falls back to JEV_MODEL, default "+decision.DefaultModel)
 	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
@@ -236,7 +248,7 @@ func runCmd(args []string) error {
 	if len(traceFiles) == 0 {
 		return fmt.Errorf("at least one trace file is required")
 	}
-	if len(metrics) == 0 {
+	if len(metrics) == 0 && *jevQuestions == "" {
 		metrics = metricFlags{"tool_trajectory_avg_score"}
 	}
 
@@ -258,9 +270,11 @@ func runCmd(args []string) error {
 		thresholds[m] = *threshold
 	}
 
-	var localMetrics, requestedJudgeMetrics, requestedVertexMetrics []string
+	var localMetrics, requestedJudgeMetrics, requestedVertexMetrics, requestedJevMetrics []string
 	for _, m := range metrics {
 		switch {
+		case decision.IsMetric(m):
+			requestedJevMetrics = append(requestedJevMetrics, m)
 		case judgeMetrics[m]:
 			requestedJudgeMetrics = append(requestedJudgeMetrics, m)
 		case vertexEvalMetrics[m]:
@@ -272,7 +286,7 @@ func runCmd(args []string) error {
 
 	var judgeModelClient judge.Model
 	if len(requestedJudgeMetrics) > 0 {
-		client, err := judge.NewModel(context.Background(), *judgeAPIKey, *judgeModel)
+		client, err := judge.NewGenAIModel(context.Background(), *judgeAPIKey, *judgeModel)
 		if err != nil {
 			return fmt.Errorf("setting up judge model: %w", err)
 		}
@@ -289,6 +303,23 @@ func runCmd(args []string) error {
 	}
 
 	rubricObjects := judge.RubricsFromStrings(rubrics)
+
+	var jevRequests []decision.Request
+	var jevClient *decision.Client
+	if len(requestedJevMetrics) > 0 || *jevQuestions != "" {
+		var custom []byte
+		if *jevQuestions != "" {
+			if custom, err = os.ReadFile(*jevQuestions); err != nil {
+				return fmt.Errorf("reading jev questions: %w", err)
+			}
+		}
+		if jevRequests, err = decision.Requests(requestedJevMetrics, custom, *threshold); err != nil {
+			return err
+		}
+		if jevClient, err = decision.NewClient(*jevAPIKey, *jevModel); err != nil {
+			return err
+		}
+	}
 
 	var reports []traceReport
 	failures := 0
@@ -323,6 +354,13 @@ func runCmd(args []string) error {
 					return fmt.Errorf("running %s: %w", m, err)
 				}
 				results = append(results, result)
+			}
+			if len(jevRequests) > 0 {
+				jevResults, err := decision.Evaluate(context.Background(), jevClient, conv.Invocations, expected, jevRequests)
+				if err != nil {
+					return fmt.Errorf("running jev metrics: %w", err)
+				}
+				results = append(results, jevResults...)
 			}
 
 			for _, r := range results {

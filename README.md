@@ -69,16 +69,6 @@ export GEMINI_API_KEY=...
   --rubric "The response directly answers the user's question"
 ```
 
-All four judge metrics can also use the Jev decision model through its Decisions API (additive over
-Python; typed questions instead of sampled prompts - see
-[docs/STATUS.md](docs/STATUS.md)):
-
-```bash
-export JEV_API_KEY=...
-./bin/agentevals run samples/helm.json --eval-set samples/eval_set_helm.json \
-  --judge-model jev-1.13 -m final_response_match_v2
-```
-
 `safety_v1` and the three `multi_turn_*_v1` metrics always call Vertex AI's Managed Eval Service directly via
 Application Default Credentials, never an API key:
 
@@ -86,6 +76,45 @@ Application Default Credentials, never an API key:
 export GOOGLE_CLOUD_PROJECT=my-project GOOGLE_CLOUD_LOCATION=us-central1
 ./bin/agentevals run samples/helm.json -m safety_v1 -m multi_turn_task_success_v1
 ```
+
+### Jev eval (`jev_*`)
+
+A separate eval family, additive over Python, built for the Jev decision model rather than adapted from a
+text-judge prompt. Each invocation goes to Jev as a structured state (user input, final response, tool calls
+with their results, up to five earlier turns, and the eval set's reference response when there is one) with
+typed questions; one call per invocation answers every selected question. A metric's score is the mean
+probability Jev gives the passing answer, and it passes at or above the threshold.
+
+| Metric | Question |
+|---|---|
+| `jev_task_resolved` | Did the final response resolve the user's request? |
+| `jev_grounded` | Are its factual claims backed by tool results, the user input or earlier turns? |
+| `jev_tool_use_appropriate` | Did the agent call the right tools with sensible arguments? |
+| `jev_matches_reference` | Same key answer as the eval set's reference? (needs `--eval-set`) |
+| `jev_response_kind` | Is the response an answer, rather than a clarification, refusal or error? |
+
+Custom questions come from a JSON file; each becomes a `jev:<key>` metric. `expect` is the passing answer
+(`true`/`false` for `noul`, default `true`; a criteria label for `choice`):
+
+```json
+{
+  "escalates_correctly": {
+    "type": "noul",
+    "instructions": "Should this conversation have been escalated to on-call?",
+    "criteria": {"true": "A production impact the agent cannot fix", "false": "Routine or resolved"},
+    "expect": false
+  }
+}
+```
+
+```bash
+export JEV_API_KEY=...
+./bin/agentevals run samples/helm.json -m jev_task_resolved -m jev_grounded --jev-questions questions.json
+```
+
+The built-ins appear in the UI's metric picker under "jev". Through `POST /api/evaluate` and the MCP
+`evaluate_traces` tool, custom questions go in a `jev_custom` evaluator's `questions` field or the
+`jev_questions_file` argument. `JEV_MODEL` picks the model (default `jev-1.13`).
 
 Sessions, Run History, and saved EvalSets survive a restart if you point `serve` at a SQLite file:
 

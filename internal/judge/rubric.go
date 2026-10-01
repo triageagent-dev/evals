@@ -259,11 +259,7 @@ func averageRubricScore(scores []rubricScore) *float64 {
 // mean of every aggregated (invocation, rubric) score across the whole
 // trace - NOT a mean of per-invocation means, since invocations may
 // carry different numbers of applicable rubrics).
-//
-// When model is a Decider (Jev), each invocation instead gets one call
-// with one yes/no question per rubric over jevState(inv); subject names
-// what the rubrics judge, for the question text.
-func runRubricMetric(ctx context.Context, model Model, name string, actual []adk.Invocation, rubrics []Rubric, numSamples int, threshold float64, formatPrompt func(adk.Invocation) string, jevState func(adk.Invocation) map[string]any, subject string) (eval.Result, error) {
+func runRubricMetric(ctx context.Context, model Model, name string, actual []adk.Invocation, rubrics []Rubric, numSamples int, threshold float64, formatPrompt func(adk.Invocation) string) (eval.Result, error) {
 	if len(rubrics) == 0 {
 		return eval.Result{}, fmt.Errorf("%s requires at least one rubric", name)
 	}
@@ -271,32 +267,22 @@ func runRubricMetric(ctx context.Context, model Model, name string, actual []adk
 		numSamples = DefaultNumSamples
 	}
 
-	decider, isDecider := model.(Decider)
 	perInvocation := make([]float64, len(actual))
 	var allScores []rubricScore
 	for i, inv := range actual {
-		var aggregated []rubricScore
-		if isDecider {
-			scores, err := jevRubricScores(ctx, decider, jevState(inv), rubrics, subject)
-			if err != nil {
-				return eval.Result{}, fmt.Errorf("invocation %d: %w", i, err)
-			}
-			aggregated = scores
-		} else {
-			prompt := formatPrompt(inv)
+		prompt := formatPrompt(inv)
 
-			samples := make([][]rubricScore, 0, numSamples)
-			for s := 0; s < numSamples; s++ {
-				resp, err := model.Generate(ctx, prompt)
-				if err != nil {
-					return eval.Result{}, fmt.Errorf("invocation %d sample %d: %w", i, s, err)
-				}
-				parsed := parseRubricResponses(resp)
-				samples = append(samples, matchRubricResponses(parsed, rubrics))
+		samples := make([][]rubricScore, 0, numSamples)
+		for s := 0; s < numSamples; s++ {
+			resp, err := model.Generate(ctx, prompt)
+			if err != nil {
+				return eval.Result{}, fmt.Errorf("invocation %d sample %d: %w", i, s, err)
 			}
-			aggregated = majorityVoteRubricScores(samples)
+			parsed := parseRubricResponses(resp)
+			samples = append(samples, matchRubricResponses(parsed, rubrics))
 		}
 
+		aggregated := majorityVoteRubricScores(samples)
 		allScores = append(allScores, aggregated...)
 		if score := averageRubricScore(aggregated); score != nil {
 			perInvocation[i] = *score

@@ -173,19 +173,8 @@ func FinalResponseMatchV2(ctx context.Context, model Model, actual, expected []a
 		numSamples = DefaultNumSamples
 	}
 
-	decider, isDecider := model.(Decider)
 	perInvocation := make([]*float64, len(actual))
 	for i := range actual {
-		if isDecider {
-			s, err := jevFinalResponseScore(ctx, decider,
-				expected[i].UserContent.Text(), actual[i].FinalResponse.Text(), expected[i].FinalResponse.Text())
-			if err != nil {
-				return eval.Result{}, fmt.Errorf("invocation %d: %w", i, err)
-			}
-			perInvocation[i] = s
-			continue
-		}
-
 		prompt := formatFinalResponseMatchV2Prompt(actual[i], expected[i])
 
 		samples := make([]*float64, 0, numSamples)

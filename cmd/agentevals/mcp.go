@@ -52,6 +52,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/triageagent-dev/agentevals-go/internal/adk"
+	"github.com/triageagent-dev/agentevals-go/internal/decision"
 	"github.com/triageagent-dev/agentevals-go/internal/eval"
 	"github.com/triageagent-dev/agentevals-go/internal/judge"
 	"github.com/triageagent-dev/agentevals-go/internal/loader"
@@ -142,12 +143,14 @@ func newMCPServer(backend *mcpBackend) *server.MCPServer {
 		mcp.WithString("eval_set_file",
 			mcp.Description("Absolute path to a golden eval set JSON file (ADK EvalSet format). Required by comparison metrics such as tool_trajectory_avg_score and response_match_score.")),
 		mcp.WithString("judge_model",
-			mcp.Description("LLM model name for judge-based metrics, e.g. \"gemini-2.5-flash\", or \"jev-1.13\" (Jev Decisions API, needs JEV_API_KEY on this machine). Required by metrics like hallucinations_v1 and final_response_match_v2.")),
+			mcp.Description("LLM model name for judge-based metrics, e.g. \"gemini-2.5-flash\". Required by metrics like hallucinations_v1 and final_response_match_v2.")),
 		mcp.WithNumber("threshold", mcp.DefaultNumber(0.5),
 			mcp.Description("Score threshold for PASS/FAIL classification, between 0.0 and 1.0.")),
 		mcp.WithArray("rubrics",
 			mcp.Description("Rubric text for rubric_based_final_response_quality_v1/rubric_based_tool_use_quality_v1 (repeatable); required by those metrics."),
 			mcp.Items(map[string]any{"type": "string"})),
+		mcp.WithString("jev_questions_file",
+			mcp.Description("Absolute path to a custom question file for the Jev eval (each question runs as a jev:<key> metric). The jev_* metrics need JEV_API_KEY on this machine.")),
 	), evaluateTracesHandler())
 
 	s.AddTool(mcp.NewTool("list_sessions",
@@ -355,8 +358,9 @@ func evaluateTracesHandler() server.ToolHandlerFunc {
 		judgeModelName := req.GetString("judge_model", judge.DefaultModel)
 		threshold := req.GetFloat("threshold", 0.5)
 		rubricTexts := req.GetStringSlice("rubrics", nil)
+		jevQuestionsFile := req.GetString("jev_questions_file", "")
 
-		result, err := runEvaluateTraces(ctx, traceFiles, metrics, traceFormat, evalSetFile, judgeModelName, threshold, rubricTexts)
+		result, err := runEvaluateTraces(ctx, traceFiles, metrics, traceFormat, evalSetFile, judgeModelName, threshold, rubricTexts, jevQuestionsFile)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -379,6 +383,7 @@ func runEvaluateTraces(
 	traceFormat, evalSetFile, judgeModelName string,
 	threshold float64,
 	rubricTexts []string,
+	jevQuestionsFile string,
 ) (*evaluateTracesResultMCP, error) {
 	var evalSet *adk.EvalSet
 	if evalSetFile != "" {
@@ -394,9 +399,11 @@ func runEvaluateTraces(
 		thresholds[m] = threshold
 	}
 
-	var localMetrics, requestedJudgeMetrics, requestedVertexMetrics []string
+	var localMetrics, requestedJudgeMetrics, requestedVertexMetrics, requestedJevMetrics []string
 	for _, m := range metrics {
 		switch {
+		case decision.IsMetric(m):
+			requestedJevMetrics = append(requestedJevMetrics, m)
 		case judgeMetrics[m]:
 			requestedJudgeMetrics = append(requestedJudgeMetrics, m)
 		case vertexEvalMetrics[m]:
@@ -408,7 +415,7 @@ func runEvaluateTraces(
 
 	var judgeModelClient judge.Model
 	if len(requestedJudgeMetrics) > 0 {
-		client, err := judge.NewModel(ctx, "", judgeModelName)
+		client, err := judge.NewGenAIModel(ctx, "", judgeModelName)
 		if err != nil {
 			return nil, fmt.Errorf("setting up judge model: %w", err)
 		}
@@ -425,6 +432,25 @@ func runEvaluateTraces(
 	}
 
 	rubricObjects := judge.RubricsFromStrings(rubricTexts)
+
+	var jevRequests []decision.Request
+	var jevClient *decision.Client
+	if len(requestedJevMetrics) > 0 || jevQuestionsFile != "" {
+		var custom []byte
+		if jevQuestionsFile != "" {
+			var err error
+			if custom, err = os.ReadFile(jevQuestionsFile); err != nil {
+				return nil, fmt.Errorf("reading jev questions: %w", err)
+			}
+		}
+		var err error
+		if jevRequests, err = decision.Requests(requestedJevMetrics, custom, threshold); err != nil {
+			return nil, err
+		}
+		if jevClient, err = decision.NewClient("", ""); err != nil {
+			return nil, err
+		}
+	}
 
 	result := &evaluateTracesResultMCP{Passed: true}
 	for _, path := range traceFiles {
@@ -460,6 +486,15 @@ func runEvaluateTraces(
 					r = eval.Result{MetricName: m, Error: err.Error()}
 				}
 				results = append(results, r)
+			}
+			if len(jevRequests) > 0 {
+				jevResults, err := decision.Evaluate(ctx, jevClient, conv.Invocations, expected, jevRequests)
+				if err != nil {
+					for _, r := range jevRequests {
+						jevResults = append(jevResults, eval.Result{MetricName: r.Metric.Name, Error: err.Error()})
+					}
+				}
+				results = append(results, jevResults...)
 			}
 
 			te := traceEvalMCP{TraceID: tr.TraceID, NumInvocations: len(conv.Invocations), Warnings: conv.Warnings}

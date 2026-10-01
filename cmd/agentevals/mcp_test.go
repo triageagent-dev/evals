@@ -280,7 +280,7 @@ func TestEvaluateTracesHandler_OfflineHelmQuickstart(t *testing.T) {
 		t.Context(),
 		[]string{traceFile},
 		[]string{"tool_trajectory_avg_score"},
-		"", evalSetFile, "", 0.5, nil,
+		"", evalSetFile, "", 0.5, nil, "",
 	)
 	if err != nil {
 		t.Fatalf("runEvaluateTraces: %v", err)
@@ -313,7 +313,7 @@ func TestEvaluateTracesHandler_MetricErrorFailsAndReportsErrorStatus(t *testing.
 		t.Context(),
 		[]string{traceFile},
 		[]string{"tool_trajectory_avg_score"},
-		"", "", "", 0.5, nil,
+		"", "", "", 0.5, nil, "",
 	)
 	if err != nil {
 		t.Fatalf("runEvaluateTraces: %v", err)
@@ -335,7 +335,7 @@ func TestEvaluateTracesHandler_MissingFileReportsErrorNotPanic(t *testing.T) {
 		t.Context(),
 		[]string{"/nonexistent/trace.json"},
 		[]string{"tool_trajectory_avg_score"},
-		"", "", "", 0.5, nil,
+		"", "", "", 0.5, nil, "",
 	)
 	if err != nil {
 		t.Fatalf("runEvaluateTraces: %v", err)
