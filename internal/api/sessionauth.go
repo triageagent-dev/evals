@@ -136,7 +136,7 @@ func isAPIPath(path string) bool {
 // this service implements no OAuth flow of its own (see README.md): it
 // only trusts a cookie/bearer value already signed by
 // AGENTEVALS_SESSION_SECRET, the same secret Python uses (shared via the
-// agentevals-session-secret K8s Secret, see charts/agentevals-go). A user who has
+// agentevals-session-secret K8s Secret, see charts/agentevals). A user who has
 // never logged in is redirected to Python's /auth/login (unprefixed -
 // reached through the same gateway, a different backend); Python's own
 // callback always lands them on /evals afterward (it has no return_to

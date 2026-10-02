@@ -78,7 +78,7 @@
   thing one layer up - see `builtin_metrics.py`'s `_build_judge_model`). An explicit `apiKey` (CLI's
   `--judge-api-key`) still forces the Gemini Developer API backend. `GET /api/config`'s `apiKeys.google` also
   reports `true` in Vertex AI mode, not just on a literal API key env var, so the UI stops red-flagging a judge
-  model that actually works - the Helm chart (`charts/agentevals-go`, `vertex.*` values) wires this up (see above).
+  model that actually works - the Helm chart (`charts/agentevals`, `vertex.*` values) wires this up (see above).
 - **`POST /api/evaluate`** (`internal/api/evaluate.go`) - ported from `api/routes.py`'s `evaluate_traces` /
   `runner.py`'s `run_evaluation`: multipart upload of one or more trace files (Jaeger or OTLP JSON/JSONL,
   auto-detected - `internal/loader`, ported from `loader/auto.py`) plus an optional golden eval set file,

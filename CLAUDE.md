@@ -85,6 +85,6 @@ streaming** path for the UI.
 - No CGO (`modernc.org/sqlite` is chosen for that; image is `cgr.dev/chainguard/static`). No dependency on
   Python or another runtime.
 - Deploy is Helm + ko: `make image` (clean tree; builds `ui/dist`, ko-pushes `<BASE_VERSION>.<count>-<sha>`),
-  `make deploy-diff`, `make deploy`. Chart in `charts/agentevals-go`; real values in `deploy/values.yaml`
+  `make deploy-diff`, `make deploy`. Chart in `charts/agentevals`; real values in `deploy/values.yaml`
   (gitignored), sanitized template `deploy/values.example.yaml`. A new root-level `/api/...` endpoint needs an
   entry in `httpRoute.rootPaths` or the gateway answers 404.

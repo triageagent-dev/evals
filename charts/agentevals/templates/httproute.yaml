@@ -5,7 +5,7 @@ kind: HTTPRoute
 metadata:
   name: {{ $r.name }}
   labels:
-    {{- include "agentevals-go.labels" . | nindent 4 }}
+    {{- include "agentevals.labels" . | nindent 4 }}
 spec:
   hostnames:
     - {{ $r.hostname | quote }}
@@ -29,7 +29,7 @@ spec:
               type: ReplacePrefixMatch
               replacePrefixMatch: /
       backendRefs:
-        - name: agentevals-go
+        - name: agentevals
           port: 8001
     - matches:
         {{- range $r.rootPaths }}
@@ -38,7 +38,7 @@ spec:
             value: {{ . }}
         {{- end }}
       backendRefs:
-        - name: agentevals-go
+        - name: agentevals
           port: 8001
 {{- if $r.aliasName }}
 ---
@@ -47,7 +47,7 @@ kind: HTTPRoute
 metadata:
   name: {{ $r.aliasName }}
   labels:
-    {{- include "agentevals-go.labels" . | nindent 4 }}
+    {{- include "agentevals.labels" . | nindent 4 }}
 spec:
   hostnames:
     - {{ $r.hostname | quote }}
@@ -71,7 +71,7 @@ spec:
               type: ReplacePrefixMatch
               replacePrefixMatch: /
       backendRefs:
-        - name: agentevals-go
+        - name: agentevals
           port: 8001
 {{- end }}
 {{- end }}

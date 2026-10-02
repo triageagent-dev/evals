@@ -2,7 +2,7 @@
 # a values file outside git - see deploy/values.example.yaml.
 
 image:
-  repository: ghcr.io/your-org/agentevals-go
+  repository: ghcr.io/your-org/agentevals
   # -- Defaults to Chart.appVersion; `make deploy` sets it to the image it built.
   tag: ""
   pullPolicy: IfNotPresent
@@ -11,17 +11,17 @@ imagePullSecrets: []
 serviceAccount:
   # -- Created by the chart. Keep the name stable: a GKE Workload Identity
   # binding is made against namespace/name.
-  name: agentevals-go
+  name: agentevals
   annotations: {}
   # e.g. iam.gke.io/gcp-service-account: <gsa>@<project>.iam.gserviceaccount.com
 
 # -- Session/run-history SQLite database on a PersistentVolumeClaim. The
 # claim is kept on `helm uninstall` (resource-policy: keep).
 persistence:
-  claimName: agentevals-go-session-db
+  claimName: agentevals-session-db
   size: 1Gi
   storageClass: ""
-  dbFile: agentevals-go-sessions.db
+  dbFile: agentevals-sessions.db
 
 # -- GitHub logins that are always admin (--admin-github-users).
 adminGithubUsers: []
@@ -68,9 +68,9 @@ httpRoute:
   # -- Route name for the UI prefix + root paths.
   name: agentevals
   prefix: /evals
-  # -- Route name for the secondary alias prefix ("" to skip).
-  aliasName: agentevals-go
-  aliasPrefix: /evals-go
+  # -- Optional second route claiming another prefix, e.g. a legacy path ("" to skip).
+  aliasName: ""
+  aliasPrefix: ""
   rootPaths:
     - /assets
     - /logo.svg

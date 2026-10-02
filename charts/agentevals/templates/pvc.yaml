@@ -3,7 +3,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: {{ .Values.persistence.claimName }}
   labels:
-    {{- include "agentevals-go.labels" . | nindent 4 }}
+    {{- include "agentevals.labels" . | nindent 4 }}
   annotations:
     helm.sh/resource-policy: keep
 spec:

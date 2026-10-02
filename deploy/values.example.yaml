@@ -1,14 +1,14 @@
 # Copy to deploy/values.yaml (gitignored) and fill in your deployment.
 image:
-  repository: ghcr.io/your-org/agentevals-go
+  repository: ghcr.io/your-org/agentevals
 imagePullSecrets:
   - name: ghcr-pull
 serviceAccount:
-  name: agentevals-go
+  name: agentevals
   annotations:
     iam.gke.io/gcp-service-account: your-gsa@your-gcp-project.iam.gserviceaccount.com
 persistence:
-  claimName: agentevals-go-session-db
+  claimName: agentevals-session-db
   size: 1Gi
   storageClass: standard
 adminGithubUsers:

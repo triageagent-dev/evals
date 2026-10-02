@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: agentevals-go
+  name: agentevals
   labels:
-    {{- include "agentevals-go.labels" . | nindent 4 }}
+    {{- include "agentevals.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
   selector:
-    app: agentevals-go
+    app: agentevals
   ports:
     - name: http
       port: 8001

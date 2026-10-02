@@ -1,9 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: agentevals-go
+  name: agentevals
   labels:
-    {{- include "agentevals-go.labels" . | nindent 4 }}
+    {{- include "agentevals.labels" . | nindent 4 }}
 spec:
   replicas: 1
   # SQLite on a ReadWriteOnce volume: never two pods at once.
@@ -11,11 +11,11 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app: agentevals-go
+      app: agentevals
   template:
     metadata:
       labels:
-        {{- include "agentevals-go.labels" . | nindent 8 }}
+        {{- include "agentevals.labels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- with .Values.imagePullSecrets }}
@@ -25,7 +25,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: agentevals-go
+        - name: agentevals
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:

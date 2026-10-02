@@ -30,18 +30,18 @@ dev-frontend:
 clean:
 	rm -rf bin ui/dist
 
-# ── release: ko image + Helm (charts/agentevals-go) ─────────────────────────
+# ── release: ko image + Helm (charts/agentevals) ─────────────────────────
 # Deployment values live in deploy/values.yaml (gitignored; copy
 # deploy/values.example.yaml). Tags are <BASE_VERSION>.<commit count>-<sha>,
 # so every image names the commit it was built from.
 BASE_VERSION  ?= 0.24
 VERSION       ?= $(BASE_VERSION).$(shell git rev-list --count HEAD)-$(shell git rev-parse --short HEAD)
-KO_DOCKER_REPO ?= ghcr.io/den-vasyliev/abox/agentevals-go
+KO_DOCKER_REPO ?= ghcr.io/den-vasyliev/abox/agentevals
 # UI path prefix baked into the build ("/" = unprefixed, what the routes expect).
 UI_BASE_PATH  ?= /
 KUBE_CONTEXT  ?= gke_gfk-eco-preview-green_europe-west3_whale
 NAMESPACE     ?= agentevals
-RELEASE       ?= agentevals-go
+RELEASE       ?= agentevals
 VALUES        ?= deploy/values.yaml
 HELM          = helm --kube-context $(KUBE_CONTEXT) -n $(NAMESPACE)
 
@@ -58,8 +58,8 @@ image: clean-tree
 
 # Show what `make deploy` would change on the cluster.
 deploy-diff:
-	$(HELM) template $(RELEASE) charts/agentevals-go -f $(VALUES) --set image.tag=$(VERSION) | kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) diff -f - || true
+	$(HELM) template $(RELEASE) charts/agentevals -f $(VALUES) --set image.tag=$(VERSION) | kubectl --context $(KUBE_CONTEXT) -n $(NAMESPACE) diff -f - || true
 
 # Roll the release to $(VERSION) (the image `make image` pushed for HEAD).
 deploy:
-	$(HELM) upgrade --install $(RELEASE) charts/agentevals-go -f $(VALUES) --set image.tag=$(VERSION) --wait --timeout 5m
+	$(HELM) upgrade --install $(RELEASE) charts/agentevals -f $(VALUES) --set image.tag=$(VERSION) --wait --timeout 5m
