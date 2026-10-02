@@ -159,3 +159,17 @@ func TestUsageHandler_WindowAndStorage(t *testing.T) {
 		t.Error("buckets must be [] not null when empty")
 	}
 }
+
+// A session's summary names its root span and counts its LLM calls, so the
+// UI can label and hide traces that made none.
+func TestSummarize_RootSpanAndLLMCalls(t *testing.T) {
+	store := NewSessionStore(nil)
+	store.Ingest(llmSpanBody("cccccccccccc0001", "llm1", time.Now().UnixMilli(), 10, 5, 1))
+	got := store.List()
+	if len(got) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(got))
+	}
+	if got[0].RootSpanName != "agent.reflection" || got[0].LLMCalls != 1 {
+		t.Errorf("root=%q llmCalls=%d, want agent.reflection / 1", got[0].RootSpanName, got[0].LLMCalls)
+	}
+}

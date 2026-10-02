@@ -42,6 +42,8 @@ interface SessionCardProps {
     };
     startedAt?: string;
     completedAt?: string | null;
+    rootSpanName?: string;
+    llmCalls?: number;
   };
   isSelected: boolean;
   onSelect: () => void;
@@ -241,6 +243,18 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
             margin: 0,
           }}>
             {session.traceId.slice(0, 16)}...
+            {session.rootSpanName && (
+              <span style={{ marginLeft: '10px', color: 'var(--text-secondary)' }}>
+                {session.rootSpanName}
+              </span>
+            )}
+            {session.status === 'complete' && session.llmCalls != null && (
+              <span style={{ marginLeft: '10px', color: 'var(--text-secondary)' }}>
+                {session.llmCalls === 0
+                  ? 'no LLM call'
+                  : `${session.llmCalls} LLM call${session.llmCalls === 1 ? '' : 's'}`}
+              </span>
+            )}
           </p>
         </div>
 

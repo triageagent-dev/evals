@@ -65,6 +65,26 @@ export function LiveStreamingView() {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [timeRange, setTimeRange] = useState<TimeRangeKey>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  // Sessions whose trace made no LLM call (a server's per-request or
+  // per-event trace) are hidden unless asked for; the choice is remembered
+  // per browser.
+  const [showNoLLM, setShowNoLLM] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('agentevals.showNoLLM') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleShowNoLLM = () => {
+    setShowNoLLM(v => {
+      try {
+        localStorage.setItem('agentevals.showNoLLM', v ? '0' : '1');
+      } catch {
+        // storage unavailable: the toggle still works for this page view
+      }
+      return !v;
+    });
+  };
   const [selectedGoldenId, setSelectedGoldenId] = useState<string | null>(null);
   const [isPreparingEvaluation, setIsPreparingEvaluation] = useState(false);
   // Sessions explicitly opted in as extra comparison traces alongside the
@@ -136,6 +156,8 @@ export function LiveStreamingView() {
           completedAt?: string | null;
           metadata: Record<string, unknown>;
           invocations?: StreamingInvocation[];
+          rootSpanName?: string;
+          llmCalls?: number;
         }> = envelope.data;
         if (!mountedRef.current) return;
 
@@ -157,6 +179,8 @@ export function LiveStreamingView() {
               liveStats: { totalInputTokens: 0, totalOutputTokens: 0 },
               startedAt: s.startedAt,
               completedAt: s.completedAt,
+              rootSpanName: s.rootSpanName,
+              llmCalls: s.llmCalls,
             });
           }
           return newMap;
@@ -407,6 +431,8 @@ export function LiveStreamingView() {
                   },
                   startedAt: new Date().toISOString(),
                   completedAt: data.completedAt,
+                  rootSpanName: data.rootSpanName,
+                  llmCalls: data.llmCalls,
                 });
               } else {
                 newMap.set(data.sessionId, {
@@ -417,6 +443,8 @@ export function LiveStreamingView() {
                     ? invocationsToElements(data.invocations)
                     : session.liveElements,
                   completedAt: data.completedAt,
+                  rootSpanName: data.rootSpanName,
+                  llmCalls: data.llmCalls,
                 });
               }
 
@@ -610,7 +638,11 @@ export function LiveStreamingView() {
     return haystacks.some(h => h.toLowerCase().includes(normalizedQuery));
   };
 
-  const sessions = Array.from(activeSessions.values()).filter(withinRange).filter(matchesSearch);
+  const hasNoLLM = (s: LiveSession) =>
+    s.status === 'complete' && !s.invocations?.length && (s.llmCalls ?? 0) === 0;
+  const matched = Array.from(activeSessions.values()).filter(withinRange).filter(matchesSearch);
+  const hiddenNoLLM = showNoLLM ? 0 : matched.filter(hasNoLLM).length;
+  const sessions = showNoLLM ? matched : matched.filter(s => !hasNoLLM(s));
   const activeLiveSessions = sessions
     .filter(s => s.status === 'active')
     .sort(byStartedAtDesc);
@@ -658,6 +690,24 @@ export function LiveStreamingView() {
             gap: '10px',
             alignItems: 'center',
           }}>
+            <button
+              onClick={toggleShowNoLLM}
+              aria-pressed={showNoLLM}
+              title="Sessions whose trace made no LLM call, such as a server's per-event traces"
+              style={{
+                padding: '7px 12px',
+                borderRadius: '8px',
+                border: `1px solid ${showNoLLM ? 'var(--accent-primary)' : 'var(--border-default)'}`,
+                background: 'var(--bg-surface)',
+                color: showNoLLM ? 'var(--text-primary)' : 'var(--text-secondary)',
+                fontSize: '13px',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {showNoLLM ? 'Hide sessions without LLM calls' : `Show sessions without LLM calls${hiddenNoLLM ? ` (${hiddenNoLLM})` : ''}`}
+            </button>
+
             <input
               type="text"
               value={searchQuery}

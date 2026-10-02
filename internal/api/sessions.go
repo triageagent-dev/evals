@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/triageagent-dev/agentevals-go/internal/adk"
 	"github.com/triageagent-dev/agentevals-go/internal/incremental"
 	"github.com/triageagent-dev/agentevals-go/internal/otlp"
 	tracepkg "github.com/triageagent-dev/agentevals-go/internal/trace"
@@ -76,6 +77,11 @@ type SessionSummary struct {
 	CompletedAt *string         `json:"completedAt"`
 	Metadata    map[string]any  `json:"metadata"`
 	Invocations []InvocationDTO `json:"invocations,omitempty"`
+	// RootSpanName and LLMCalls are additive over Python's SessionInfo: they
+	// let the UI label a session that has no conversation (a server's
+	// request or event-processing trace) and hide such sessions by default.
+	RootSpanName string `json:"rootSpanName,omitempty"`
+	LLMCalls     int    `json:"llmCalls"`
 }
 
 func summarize(s *Session) SessionSummary {
@@ -96,17 +102,35 @@ func summarize(s *Session) SessionSummary {
 	if s.IsComplete && len(s.Invocations) > 0 {
 		invocations = s.Invocations
 	}
+	rootName, llmCalls := spanOutline(s.Spans)
 	return SessionSummary{
-		SessionID:   s.ID,
-		TraceID:     s.PrimaryTraceID,
-		EvalSetID:   evalSetID,
-		SpanCount:   len(s.Spans),
-		IsComplete:  s.IsComplete,
-		StartedAt:   s.StartedAt.Format(time.RFC3339),
-		CompletedAt: completedAt,
-		Metadata:    metadata,
-		Invocations: invocations,
+		RootSpanName: rootName,
+		LLMCalls:     llmCalls,
+		SessionID:    s.ID,
+		TraceID:      s.PrimaryTraceID,
+		EvalSetID:    evalSetID,
+		SpanCount:    len(s.Spans),
+		IsComplete:   s.IsComplete,
+		StartedAt:    s.StartedAt.Format(time.RFC3339),
+		CompletedAt:  completedAt,
+		Metadata:     metadata,
+		Invocations:  invocations,
 	}
+}
+
+// spanOutline returns the earliest root span's name and the number of LLM
+// call spans in spans.
+func spanOutline(spans []*tracepkg.Span) (rootName string, llmCalls int) {
+	var rootStart int64
+	for _, sp := range spans {
+		if adk.IsLLMSpan(sp) {
+			llmCalls++
+		}
+		if sp.ParentSpanID == "" && (rootName == "" || sp.StartTime < rootStart) {
+			rootName, rootStart = sp.OperationName, sp.StartTime
+		}
+	}
+	return rootName, llmCalls
 }
 
 // sessionStartedEvent / spanReceivedEvent mirror WSSessionStartedEvent /
@@ -134,6 +158,9 @@ type sessionCompleteEvent struct {
 	SessionID   string          `json:"sessionId"`
 	Invocations []InvocationDTO `json:"invocations"`
 	CompletedAt *string         `json:"completedAt"`
+	// Additive over Python, as on SessionSummary.
+	RootSpanName string `json:"rootSpanName,omitempty"`
+	LLMCalls     int    `json:"llmCalls"`
 }
 
 // SessionStore holds every session ingested since process start, in memory,
@@ -600,15 +627,18 @@ func (s *SessionStore) completeSession(sessionID string) {
 
 	completedAt := now.Format(time.RFC3339)
 	invocations := session.Invocations
+	rootName, llmCalls := spanOutline(session.Spans)
 	hub := s.hub
 	s.mu.Unlock()
 
 	if hub != nil {
 		hub.broadcast(sessionCompleteEvent{
-			Type:        "session_complete",
-			SessionID:   sessionID,
-			Invocations: invocations,
-			CompletedAt: &completedAt,
+			Type:         "session_complete",
+			SessionID:    sessionID,
+			Invocations:  invocations,
+			CompletedAt:  &completedAt,
+			RootSpanName: rootName,
+			LLMCalls:     llmCalls,
 		})
 	}
 }
