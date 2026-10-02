@@ -289,6 +289,9 @@ spec:
             value: /api/runs
         - path:
             type: PathPrefix
+            value: /api/usage
+        - path:
+            type: PathPrefix
             value: /api/streaming
         - path:
             type: PathPrefix
