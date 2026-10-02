@@ -27,6 +27,10 @@ const (
 	OpenInferenceToolName        = "tool.name"
 	OpenInferenceToolLatencyMs   = "tool.latency_ms"
 	OpenInferenceToolResultBytes = "tool.result_bytes"
+	OpenInferenceSpanKind        = "openinference.span.kind"
+	OpenInferenceModelName       = "llm.model_name"
+	OpenInferenceTokenPrompt     = "llm.token_count.prompt"
+	OpenInferenceTokenCompletion = "llm.token_count.completion"
 
 	AdkLLMRequest   = "gcp.vertex.agent.llm_request"
 	AdkLLMResponse  = "gcp.vertex.agent.llm_response"

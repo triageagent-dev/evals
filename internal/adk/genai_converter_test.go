@@ -147,3 +147,94 @@ func TestConvertTrace_OpenInferenceMultiTurn(t *testing.T) {
 		t.Errorf("turn 2 tool use wrong: %+v", second.IntermediateData.ToolUses)
 	}
 }
+
+// buildTriageCoreAgentTrace reproduces triage-core's OpenInference shape for
+// a reflection/RCA pass: an AGENT root span carrying the clean prompt and
+// answer, and an llm.chat.completions child that has only OpenInference
+// markers (Vertex path: no gen_ai.*, no input/output values).
+func buildTriageCoreAgentTrace() *tracepkg.Trace {
+	root := &tracepkg.Span{
+		TraceID: "trace-c", SpanID: "agent", OperationName: "agent.reflection",
+		StartTime: 0, Duration: 3_000_000,
+		Tags: map[string]any{
+			"openinference.span.kind": "AGENT",
+			"input.value":             "cart is failing, what is the cause?",
+			"output.value":            "redis is down",
+		},
+	}
+	llm := &tracepkg.Span{
+		TraceID: "trace-c", SpanID: "llm", ParentSpanID: "agent", OperationName: "llm.chat.completions",
+		StartTime: 100_000, Duration: 2_000_000,
+		Tags: map[string]any{
+			"openinference.span.kind":    "LLM",
+			"llm.model_name":             "gemini-2.5-flash",
+			"llm.token_count.prompt":     int64(1200),
+			"llm.token_count.completion": int64(80),
+		},
+	}
+	root.Children = []*tracepkg.Span{llm}
+	return &tracepkg.Trace{TraceID: "trace-c", RootSpans: []*tracepkg.Span{root}, AllSpans: []*tracepkg.Span{root, llm}}
+}
+
+func TestConvertTrace_OpenInferenceAgentWithBareLLMChild(t *testing.T) {
+	tr := buildTriageCoreAgentTrace()
+	if !adk.DetectGenAIFormat(tr) {
+		t.Fatal("expected DetectGenAIFormat to fire on openinference.span.kind=LLM / llm.model_name")
+	}
+	result := adk.ConvertTrace(tr)
+	if len(result.Invocations) != 1 {
+		t.Fatalf("expected 1 invocation, got %d (warnings %v)", len(result.Invocations), result.Warnings)
+	}
+	inv := result.Invocations[0]
+	if got := inv.UserContent.Text(); got != "cart is failing, what is the cause?" {
+		t.Errorf("UserContent = %q, want the agent span's input.value", got)
+	}
+	if got := inv.FinalResponse.Text(); got != "redis is down" {
+		t.Errorf("FinalResponse = %q, want the agent span's output.value", got)
+	}
+}
+
+// A request/response LLM span carrying both input.value and output.value is
+// one complete call, not one side of a voice turn: its output must not be
+// dropped by the turn pairing.
+func TestConvertTrace_OpenInferenceTwoSidedLLMSpan(t *testing.T) {
+	root := &tracepkg.Span{
+		TraceID: "trace-d", SpanID: "rca", OperationName: "rca.build_rca",
+		StartTime: 0, Duration: 2_000_000, Tags: map[string]any{"openinference.span.kind": "CHAIN"},
+	}
+	llm := &tracepkg.Span{
+		TraceID: "trace-d", SpanID: "llm", ParentSpanID: "rca", OperationName: "llm.chat.completions",
+		StartTime: 10, Duration: 1_000_000,
+		Tags: map[string]any{
+			"openinference.span.kind": "LLM",
+			"llm.model_name":          "m",
+			"input.value":             "why is checkout down",
+			"output.value":            "OOM kill",
+		},
+	}
+	root.Children = []*tracepkg.Span{llm}
+	tr := &tracepkg.Trace{TraceID: "trace-d", RootSpans: []*tracepkg.Span{root}, AllSpans: []*tracepkg.Span{root, llm}}
+
+	result := adk.ConvertTrace(tr)
+	if len(result.Invocations) != 1 {
+		t.Fatalf("expected 1 invocation, got %d (warnings %v)", len(result.Invocations), result.Warnings)
+	}
+	inv := result.Invocations[0]
+	if got := inv.UserContent.Text(); got != "why is checkout down" {
+		t.Errorf("UserContent = %q", got)
+	}
+	if got := inv.FinalResponse.Text(); got != "OOM kill" {
+		t.Errorf("FinalResponse = %q, want the span's output.value", got)
+	}
+}
+
+func TestExtractTokenUsageFromAttrs_OpenInference(t *testing.T) {
+	in, out, model := adk.ExtractTokenUsageFromAttrs(map[string]any{
+		"llm.model_name":             "gemini-2.5-flash",
+		"llm.token_count.prompt":     int64(1200),
+		"llm.token_count.completion": int64(80),
+	})
+	if in != 1200 || out != 80 || model != "gemini-2.5-flash" {
+		t.Errorf("got (%d, %d, %q), want (1200, 80, gemini-2.5-flash)", in, out, model)
+	}
+}

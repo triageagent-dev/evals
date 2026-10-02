@@ -70,7 +70,8 @@ func (e *Extractor) ProcessSpan(span *tracepkg.Span) []Update {
 	var updates []Update
 
 	isADK := span.TagString(adk.OtelScope) == adk.AdkScopeValue
-	isGenAILLM := span.HasTag(adk.GenAIRequestModel) && span.TagString(adk.GenAIRequestModel) != ""
+	isGenAILLM := (span.HasTag(adk.GenAIRequestModel) && span.TagString(adk.GenAIRequestModel) != "") ||
+		span.TagString(adk.OpenInferenceSpanKind) == "LLM" || span.TagString(adk.OpenInferenceModelName) != ""
 	isGenAITool := span.HasTag(adk.GenAIToolName) && span.TagString(adk.GenAIToolName) != ""
 
 	if !isADK && !isGenAILLM && !isGenAITool {

@@ -294,6 +294,9 @@ func stringField(m map[string]any, key string) string {
 func ExtractTokenUsageFromAttrs(tags map[string]any) (inputTokens, outputTokens int64, model string) {
 	model, _ = tags[GenAIRequestModel].(string)
 	if model == "" {
+		model, _ = tags[OpenInferenceModelName].(string)
+	}
+	if model == "" {
 		model = "unknown"
 	}
 
@@ -313,6 +316,12 @@ func ExtractTokenUsageFromAttrs(tags map[string]any) (inputTokens, outputTokens 
 
 	in := toInt64(tags[GenAIUsageInputTokens])
 	out := toInt64(tags[GenAIUsageOutputTokens])
+	if in != 0 || out != 0 {
+		return in, out, model
+	}
+
+	in = toInt64(tags[OpenInferenceTokenPrompt])
+	out = toInt64(tags[OpenInferenceTokenCompletion])
 	if in != 0 || out != 0 {
 		return in, out, model
 	}

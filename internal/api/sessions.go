@@ -378,15 +378,6 @@ func (s *SessionStore) Ingest(body map[string]any) int {
 		conversationID, _ := resourceAttrs[genAIConversationID].(string)
 		evalSetID, _ := resourceAttrs[agentevalsEvalSetID].(string)
 
-		// A resourceSpans batch can contain multiple scopes; if none carry a
-		// session_name/conversation_id directly, pre-scan every span's own
-		// attributes for gen_ai.conversation.id (ported from
-		// otlp_processing.py's _prescan_conversation_id) so the whole batch
-		// still routes to one session.
-		if sessionName == "" && conversationID == "" {
-			conversationID = prescanConversationID(resourceSpan)
-		}
-
 		singleBody := map[string]any{"resourceSpans": []any{rs}}
 		traces := otlp.ParseExportRequest(singleBody)
 
@@ -394,6 +385,14 @@ func (s *SessionStore) Ingest(body map[string]any) int {
 			name := sessionName
 			if name == "" {
 				name = conversationID
+			}
+			// Without a resource-level identity, read gen_ai.conversation.id
+			// from this trace's own spans. otlp_processing.py's
+			// _prescan_conversation_id scans the whole resourceSpans batch
+			// instead, which routes every trace of a long-running server's
+			// batched export to whichever conversation it meets first.
+			if name == "" {
+				name = traceConversationID(tr)
 			}
 			if name == "" {
 				name = fmt.Sprintf("otlp-%s", shortID(tr.TraceID))
@@ -607,19 +606,10 @@ func shortID(id string) string {
 	return id
 }
 
-func prescanConversationID(resourceSpan map[string]any) string {
-	for _, ss := range asSlice(resourceSpan["scopeSpans"]) {
-		scopeSpan := asMap(ss)
-		for _, sd := range asSlice(scopeSpan["spans"]) {
-			spanData := asMap(sd)
-			for _, a := range asSlice(spanData["attributes"]) {
-				attr := asMap(a)
-				if attr["key"] == genAIConversationID {
-					if v, ok := asMap(attr["value"])["stringValue"].(string); ok {
-						return v
-					}
-				}
-			}
+func traceConversationID(tr *tracepkg.Trace) string {
+	for _, span := range tr.AllSpans {
+		if v := span.TagString(genAIConversationID); v != "" {
+			return v
 		}
 	}
 	return ""

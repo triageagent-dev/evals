@@ -15,19 +15,25 @@ import (
 // point (converter.py's convert_trace); ConvertGenAITrace is the non-ADK
 // path specifically (genai_converter.py's convert_genai_trace).
 
-// isLLMSpan reports whether span is a GenAI-semconv LLM call span. Ported
-// from extraction.py's is_llm_span.
+// isLLMSpan reports whether span is an LLM call span: GenAI semconv
+// (gen_ai.request.model, as extraction.py's is_llm_span) or OpenInference
+// (openinference.span.kind=LLM or llm.model_name, as Phoenix reads them).
 func isLLMSpan(span *tracepkg.Span) bool {
-	return span.HasTag(GenAIRequestModel)
+	return span.HasTag(GenAIRequestModel) ||
+		span.TagString(OpenInferenceSpanKind) == "LLM" ||
+		span.TagString(OpenInferenceModelName) != ""
 }
 
 // isOpenInferenceTurnSpan reports whether span carries one side of an
 // OpenInference-style utterance (input.value XOR output.value - a
 // voice/realtime session emits one span per utterance, never both, and a
-// session-level span carries neither). Ported from extraction.py's
-// is_openinference_turn_span.
+// session-level span carries neither). A span with both is a complete
+// request/response call, handled by extractSingleTurn; treating it as a
+// turn side would pair its input with nothing and drop its output.
 func isOpenInferenceTurnSpan(span *tracepkg.Span) bool {
-	return span.TagString(OpenInferenceInputValue) != "" || span.TagString(OpenInferenceOutputValue) != ""
+	hasIn := span.TagString(OpenInferenceInputValue) != ""
+	hasOut := span.TagString(OpenInferenceOutputValue) != ""
+	return hasIn != hasOut
 }
 
 // isToolSpan reports whether span is a GenAI-semconv or OpenInference tool
@@ -100,12 +106,13 @@ func hasGenAILLMChildren(span *tracepkg.Span) bool {
 	return false
 }
 
-// DetectGenAIFormat reports whether tr looks like a GenAI-semconv (non-ADK)
-// trace: any span carrying gen_ai.request.model or gen_ai.input.messages.
-// Ported from GenAIExtractor.detect.
+// DetectGenAIFormat reports whether tr looks like a GenAI-semconv or
+// OpenInference (non-ADK) trace: any LLM span (see isLLMSpan) or any span
+// carrying gen_ai.input.messages. Ported from GenAIExtractor.detect, widened
+// to OpenInference.
 func DetectGenAIFormat(tr *tracepkg.Trace) bool {
 	for _, span := range tr.AllSpans {
-		if span.HasTag(GenAIRequestModel) || span.HasTag(GenAIInputMessages) {
+		if isLLMSpan(span) || span.HasTag(GenAIInputMessages) {
 			return true
 		}
 	}
@@ -306,13 +313,22 @@ func extractTurns(invSpan *tracepkg.Span) ([]conversationTurn, error) {
 func extractSingleTurn(invSpan *tracepkg.Span, llmSpans []*tracepkg.Span) (conversationTurn, error) {
 	toolSpans := findGenAIToolSpansIn(invSpan)
 
+	// An OpenInference AGENT/CHAIN invocation span often carries the clean
+	// prompt and answer itself while its LLM children record only the call
+	// (or the raw request body), so it is the fallback for either side.
 	userText := ExtractUserTextFromAttrs(llmSpans[0].Tags)
+	if userText == "" && invSpan != llmSpans[0] {
+		userText = ExtractUserTextFromAttrs(invSpan.Tags)
+	}
 	if userText == "" {
 		return conversationTurn{}, fmt.Errorf(
-			"LLM span %s: no user message found (checked gen_ai.input.messages and ADK llm_request)",
+			"LLM span %s: no user message found (checked gen_ai.input.messages, ADK llm_request and input.value)",
 			llmSpans[0].SpanID)
 	}
 	assistantText := ExtractAgentResponseFromAttrs(llmSpans[len(llmSpans)-1].Tags)
+	if assistantText == "" && invSpan != llmSpans[len(llmSpans)-1] {
+		assistantText = ExtractAgentResponseFromAttrs(invSpan.Tags)
+	}
 	toolCalls, toolResponses := extractGenAIToolCalls(toolSpans, llmSpans)
 
 	return conversationTurn{

@@ -253,6 +253,55 @@ func TestSessionStore_FallsBackToSyntheticNameWithoutSessionName(t *testing.T) {
 	}
 }
 
+// A server's batched export carries many traces in one resourceSpans; each
+// trace must route by its own gen_ai.conversation.id, and a trace without
+// one must not be pulled into another trace's conversation.
+func TestSessionStore_ConversationIDRoutesPerTrace(t *testing.T) {
+	store := NewSessionStore(nil)
+	span := func(traceID, spanID, conv string) map[string]any {
+		s := map[string]any{
+			"traceId": traceID, "spanId": spanID, "name": "llm.chat.completions",
+			"startTimeUnixNano": "1000", "endTimeUnixNano": "2000",
+		}
+		if conv != "" {
+			s["attributes"] = []any{map[string]any{"key": "gen_ai.conversation.id", "value": map[string]any{"stringValue": conv}}}
+		}
+		return s
+	}
+	body := map[string]any{
+		"resourceSpans": []any{
+			map[string]any{
+				"resource": map[string]any{},
+				"scopeSpans": []any{
+					map[string]any{
+						"scope": map[string]any{},
+						"spans": []any{
+							span("aaaaaaaaaaaa0001", "a1", "concern-a"),
+							span("bbbbbbbbbbbb0002", "b1", "concern-b"),
+							span("dddddddddddd0003", "d1", ""),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	store.Ingest(body)
+	got := map[string]int{}
+	for _, s := range store.List() {
+		got[s.SessionID] = s.SpanCount
+	}
+	want := map[string]int{"concern-a": 1, "concern-b": 1, "otlp-dddddddddddd": 1}
+	if len(got) != len(want) {
+		t.Fatalf("sessions = %v, want %v", got, want)
+	}
+	for id, n := range want {
+		if got[id] != n {
+			t.Errorf("session %q has %d span(s), want %d (all: %v)", id, got[id], n, got)
+		}
+	}
+}
+
 func TestSessionStore_Trace(t *testing.T) {
 	store := NewSessionStore(nil)
 	store.Ingest(sampleTracesBody("sess-1", "aaaa", "span-a"))
