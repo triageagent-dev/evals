@@ -124,7 +124,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 // directly rather than via requireSession, since this route must be
 // reachable (and answer honestly) precisely when there is no valid
 // session.
-func authMeHandler(sessionSecret string, ghTokens *githubTokenValidator) http.HandlerFunc {
+func authMeHandler(sessionSecret string, ghTokens *githubTokenValidator, roleStore *RoleStore, org string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		username, ok := extractSessionUsername(r, sessionSecret, ghTokens)
@@ -133,6 +133,13 @@ func authMeHandler(sessionSecret string, ghTokens *githubTokenValidator) http.Ha
 			_ = json.NewEncoder(w).Encode(map[string]bool{"authenticated": false})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"authenticated": true, "username": username})
+		resp := map[string]any{"authenticated": true, "username": username}
+		if roleStore != nil {
+			teams := resolveTeamsForRequest(r, roleStore, org, sessionSecret, ghTokens, username)
+			info := roleStore.EffectiveRole(username, teams)
+			resp["role"] = string(info.Role)
+			resp["agents"] = info.Agents // nil (omitted as JSON null) means unrestricted.
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	}
 }

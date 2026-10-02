@@ -9,7 +9,13 @@
 // list_runs/get_run_results expose this Go port's run-history storage
 // (internal/api/runs.go, GET /api/runs and /api/runs/{id}/results), which
 // has no Python equivalent - mcp_server.py doesn't have run history
-// persistence to surface at all.
+// persistence to surface at all. Also additive: list_role_bindings/
+// set_role_binding/delete_role_binding expose this Go port's multi-user
+// RBAC (internal/api/roles.go, /api/admin/roles) - Python has no
+// equivalent concept at all; every one of these three tools requires the
+// caller to already be an admin (same GitHub-identity check the REST
+// handlers themselves enforce) and a server running with
+// --session-secret (GitHub OAuth) enabled.
 //
 // Not ported: evaluate_sessions (streaming_routes.py's
 // POST /api/streaming/evaluate-sessions isn't implemented yet - see
@@ -188,6 +194,34 @@ func newMCPServer(backend *mcpBackend) *server.MCPServer {
 			mcp.Description("Run ID obtained from list_runs.")),
 	), getRunResultsHandler(backend))
 
+	s.AddTool(mcp.NewTool("list_role_bindings",
+		mcp.WithDescription("List all admin/member/viewer role bindings (multi-user RBAC). Requires the caller "+
+			"to be an admin, and the server to be running with --session-secret (GitHub OAuth) enabled."),
+	), listRoleBindingsHandler(backend))
+
+	s.AddTool(mcp.NewTool("set_role_binding",
+		mcp.WithDescription("Create or update a role binding: grants a role (admin/member/viewer), optionally "+
+			"scoped to specific agent names, to a GitHub user or team. Pass id to update an existing binding "+
+			"in place; omit it to create a new one. Requires the caller to be an admin."),
+		mcp.WithString("subject_type", mcp.Required(),
+			mcp.Description("\"user\" or \"team\".")),
+		mcp.WithString("subject", mcp.Required(),
+			mcp.Description("GitHub login for subject_type \"user\" (e.g. \"octocat\"), or \"org/team-slug\" for subject_type \"team\" (e.g. \"my-org/my-team\").")),
+		mcp.WithString("role", mcp.Required(),
+			mcp.Description("Role to grant: \"admin\", \"member\", or \"viewer\".")),
+		mcp.WithArray("agents",
+			mcp.Description("Optional agent-name allowlist scoping this binding to Run History for only those agents. Omit/empty for unrestricted."),
+			mcp.Items(map[string]any{"type": "string"})),
+		mcp.WithString("id",
+			mcp.Description("ID of an existing role binding to update in place (from list_role_bindings). Omit to create a new binding.")),
+	), setRoleBindingHandler(backend))
+
+	s.AddTool(mcp.NewTool("delete_role_binding",
+		mcp.WithDescription("Delete a role binding by ID (from list_role_bindings). Requires the caller to be an admin."),
+		mcp.WithString("id", mcp.Required(),
+			mcp.Description("ID of the role binding to delete.")),
+	), deleteRoleBindingHandler(backend))
+
 	return s
 }
 
@@ -274,6 +308,10 @@ func (b *mcpBackend) get(ctx context.Context, path string, out any) error {
 
 func (b *mcpBackend) post(ctx context.Context, path string, body, out any) error {
 	return b.request(ctx, http.MethodPost, path, body, out)
+}
+
+func (b *mcpBackend) delete(ctx context.Context, path string, out any) error {
+	return b.request(ctx, http.MethodDelete, path, nil, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -826,6 +864,108 @@ func getRunResultsHandler(backend *mcpBackend) server.ToolHandlerFunc {
 				Details:             r.Details,
 				ErrorText:           r.ErrorText,
 			}
+		}
+		return mcp.NewToolResultStructuredOnly(out), nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// list_role_bindings / set_role_binding / delete_role_binding
+// ---------------------------------------------------------------------------
+
+// roleBindingMCP mirrors internal/api/roles.go's RoleBinding field-for-
+// field, in snake_case (this tool's wire contract, like every other tool
+// in this file, versus the camelCase REST DTO the /api/admin/roles
+// handlers actually serve).
+type roleBindingMCP struct {
+	ID          string   `json:"id"`
+	SubjectType string   `json:"subject_type"`
+	Subject     string   `json:"subject"`
+	Role        string   `json:"role"`
+	Agents      []string `json:"agents,omitempty"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
+}
+
+// roleBindingRaw matches internal/api/roles.go's RoleBinding as served
+// over the wire by GET/POST /api/admin/roles (camelCase).
+type roleBindingRaw struct {
+	ID          string   `json:"id"`
+	SubjectType string   `json:"subjectType"`
+	Subject     string   `json:"subject"`
+	Role        string   `json:"role"`
+	Agents      []string `json:"agents,omitempty"`
+	CreatedAt   string   `json:"createdAt"`
+	UpdatedAt   string   `json:"updatedAt"`
+}
+
+func (r roleBindingRaw) toMCP() roleBindingMCP {
+	return roleBindingMCP{
+		ID: r.ID, SubjectType: r.SubjectType, Subject: r.Subject, Role: r.Role,
+		Agents: r.Agents, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+	}
+}
+
+func listRoleBindingsHandler(backend *mcpBackend) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var raw []roleBindingRaw
+		if err := backend.get(ctx, "/api/admin/roles", &raw); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		out := make([]roleBindingMCP, len(raw))
+		for i, b := range raw {
+			out[i] = b.toMCP()
+		}
+		return mcp.NewToolResultStructuredOnly(out), nil
+	}
+}
+
+func setRoleBindingHandler(backend *mcpBackend) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		subjectType, err := req.RequireString("subject_type")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		subject, err := req.RequireString("subject")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		role, err := req.RequireString("role")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		agents := req.GetStringSlice("agents", nil)
+		id := req.GetString("id", "")
+
+		body := map[string]any{
+			"subjectType": subjectType,
+			"subject":     subject,
+			"role":        role,
+		}
+		if len(agents) > 0 {
+			body["agents"] = agents
+		}
+		if id != "" {
+			body["id"] = id
+		}
+
+		var raw roleBindingRaw
+		if err := backend.post(ctx, "/api/admin/roles", body, &raw); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultStructuredOnly(raw.toMCP()), nil
+	}
+}
+
+func deleteRoleBindingHandler(backend *mcpBackend) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id, err := req.RequireString("id")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		var out map[string]bool
+		if err := backend.delete(ctx, "/api/admin/roles/"+url.PathEscape(id), &out); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 		return mcp.NewToolResultStructuredOnly(out), nil
 	}

@@ -125,6 +125,7 @@ func usage() {
 Usage:
   agentevals run <trace-file>... --eval-set <path> -m <metric> [-m <metric>...] [flags]
   agentevals serve [--addr :8001] [--otlp-addr :4318] [--otlp-grpc-addr :4317] [--health-addr :9090] [--session-db path] [--session-secret secret]
+                   [--admin-github-users user1,user2] [--default-role member]
   agentevals auth mint-token --name <label> [--ttl-days 3650] [--secret ...]
   agentevals mcp [--server-url http://localhost:8001] [--session-token ...]
 
@@ -424,6 +425,10 @@ func serveCmd(args []string) error {
 		"GitHub org whose active members are granted access once OAuth is enabled; falls back to AGENTEVALS_GITHUB_ORG. Required whenever --github-client-id/--github-client-secret are set.")
 	publicURL := fs.String("public-url", os.Getenv("AGENTEVALS_PUBLIC_URL"),
 		"this service's own externally-reachable base URL, e.g. https://your-app.example.com, used to build an exact OAuth redirect_uri (PublicURL+\"/auth/callback\"); falls back to AGENTEVALS_PUBLIC_URL. Required whenever --github-client-id/--github-client-secret are set (no fallback is derived from the incoming request - see internal/api/oauth.go's package doc).")
+	adminGitHubUsers := fs.String("admin-github-users", os.Getenv("AGENTEVALS_ADMIN_GITHUB_USERS"),
+		"comma-separated GitHub logins idempotently granted the admin role at startup (see internal/api/roles.go); falls back to AGENTEVALS_ADMIN_GITHUB_USERS. Only takes effect when --session-secret is set. The only way to get a first admin into an otherwise-empty role store - after that, admins manage every role (including further admins) via GET/POST /api/admin/roles.")
+	defaultRole := fs.String("default-role", envOrDefault("AGENTEVALS_DEFAULT_ROLE", "member"),
+		"role (admin | member | viewer) granted to any authenticated user with no matching role binding; falls back to AGENTEVALS_DEFAULT_ROLE. \"member\" (the default) preserves this port's original fully-open, single-tier behavior for a deployment that never configures a role binding at all.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -431,5 +436,25 @@ func serveCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("github OAuth config: %w", err)
 	}
-	return api.Serve(*addr, *otlpAddr, *otlpGRPCAddr, *healthAddr, *sessionDB, *sessionSecret, githubOAuth)
+	var adminUsers []string
+	for _, u := range strings.Split(*adminGitHubUsers, ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			adminUsers = append(adminUsers, u)
+		}
+	}
+	return api.Serve(*addr, *otlpAddr, *otlpGRPCAddr, *healthAddr, *sessionDB, *sessionSecret, githubOAuth, adminUsers, *defaultRole)
+}
+
+// envOrDefault returns os.Getenv(key) if set (even to an explicit
+// override a user wants to clear back to an empty string isn't
+// representable this way, but no flag here needs that), else fallback -
+// used where a flag's default should be an env var if present, a fixed
+// literal otherwise, unlike the plain os.Getenv(...) pattern used
+// elsewhere in this file whose own zero value ("") is already the right
+// default.
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

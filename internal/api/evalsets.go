@@ -57,6 +57,10 @@ func saveEvalSetHandler(store *SQLiteStore) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if !roleInfoOrOpen(r.Context()).CanWrite() {
+			writeEvaluateError(w, http.StatusForbidden, "viewer role cannot save eval sets")
+			return
+		}
 		var evalSet adk.EvalSet
 		if err := json.NewDecoder(r.Body).Decode(&evalSet); err != nil {
 			writeEvaluateError(w, http.StatusBadRequest, "invalid eval set JSON: "+err.Error())

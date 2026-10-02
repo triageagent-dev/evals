@@ -189,8 +189,13 @@ func authLoginHandler(cfg *GitHubOAuthConfig) http.HandlerFunc {
 // member) must both deny, since "can't tell" is not a safe default for an
 // access gate. On success, mints and sets the same signed session cookie
 // requireSession validates, then redirects to /evals (this service's own
-// canonical UI path now - see deploy/k8s.yaml's HTTPRoute).
-func authCallbackHandler(cfg *GitHubOAuthConfig) http.HandlerFunc {
+// canonical UI path now - see deploy/k8s.yaml's HTTPRoute). roleStore, if
+// non-nil (RBAC configured - see server.go's Serve), also has this
+// user's GitHub team memberships resolved and cached here - the only
+// point this service ever holds their own GitHub access token, needed to
+// let a team-based RoleBinding apply to their browser session at all (see
+// roles.go's teamCacheTTL doc comment).
+func authCallbackHandler(cfg *GitHubOAuthConfig, roleStore *RoleStore) http.HandlerFunc {
 	client := &http.Client{Timeout: 10 * time.Second}
 	return func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
@@ -228,6 +233,14 @@ func authCallbackHandler(cfg *GitHubOAuthConfig) http.HandlerFunc {
 			log.Printf("auth: GitHub OAuth: %s denied (not an active member of org %s)", username, cfg.Org)
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": fmt.Sprintf("GitHub user %q is not an active member of the %q org", username, cfg.Org)})
 			return
+		}
+
+		if roleStore != nil {
+			if teams, err := FetchUserTeams(client, cfg.Org, accessToken); err != nil {
+				log.Printf("auth: resolving GitHub team memberships for %s failed (team-based role bindings won't apply this session): %v", username, err)
+			} else {
+				roleStore.setTeams(username, teams)
+			}
 		}
 
 		log.Printf("auth: GitHub OAuth: %s authenticated (member of %s)", username, cfg.Org)
@@ -309,6 +322,63 @@ func fetchGitHubLogin(client *http.Client, accessToken string) (string, error) {
 		return "", fmt.Errorf("GitHub user endpoint returned no login")
 	}
 	return data.Login, nil
+}
+
+// teamsFetchMaxPages/teamsFetchPerPage bound GET /user/teams pagination -
+// a user in an unusually large number of teams across many orgs can't
+// make FetchUserTeams loop indefinitely; 500 teams (5 pages * 100) is far
+// beyond any real GitHub org's team count.
+const (
+	teamsFetchMaxPages = 5
+	teamsFetchPerPage  = 100
+)
+
+// FetchUserTeams returns the "org/slug" team memberships (filtered to
+// org) of the GitHub user identified by accessToken, via GET /user/teams -
+// the only GitHub API that lists a user's *own* teams without requiring
+// org-admin privileges. Used exclusively to resolve team-based
+// RoleBinding subjects (see roles.go); never to gate org membership
+// itself - checkOrgMembership remains the sole authority for "is this
+// user allowed in at all".
+func FetchUserTeams(client *http.Client, org, accessToken string) ([]string, error) {
+	var slugs []string
+	for page := 1; page <= teamsFetchMaxPages; page++ {
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/user/teams?per_page=%d&page=%d", githubAPIBaseURL, teamsFetchPerPage, page), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "token "+accessToken)
+		req.Header.Set("Accept", "application/vnd.github+json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		var batch []struct {
+			Slug         string `json:"slug"`
+			Organization struct {
+				Login string `json:"login"`
+			} `json:"organization"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&batch)
+		status := resp.StatusCode
+		resp.Body.Close()
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("GitHub /user/teams returned %d", status)
+		}
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		for _, t := range batch {
+			if strings.EqualFold(t.Organization.Login, org) {
+				slugs = append(slugs, org+"/"+t.Slug)
+			}
+		}
+		if len(batch) < teamsFetchPerPage {
+			break
+		}
+	}
+	return slugs, nil
 }
 
 // checkOrgMembership ports the callback's membership check: GitHub

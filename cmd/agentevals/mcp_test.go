@@ -351,3 +351,106 @@ func TestEvaluateTracesHandler_MissingFileReportsErrorNotPanic(t *testing.T) {
 		t.Fatalf("got %d top-level errors, want 1: %+v", len(result.Errors), result.Errors)
 	}
 }
+
+func TestListRoleBindingsHandler_ReturnsSnakeCaseFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/admin/roles" || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"rb-1","subjectType":"user","subject":"octocat","role":"admin","createdAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z"}],"error":null}`))
+	}))
+	defer srv.Close()
+
+	backend := &mcpBackend{baseURL: srv.URL, client: srv.Client()}
+	result, err := listRoleBindingsHandler(backend)(t.Context(), mcp.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("listRoleBindingsHandler: %v", err)
+	}
+	var out []roleBindingMCP
+	structuredContent(t, result, &out)
+	if len(out) != 1 || out[0].ID != "rb-1" || out[0].SubjectType != "user" || out[0].Subject != "octocat" || out[0].Role != "admin" {
+		t.Fatalf("unexpected role bindings: %+v", out)
+	}
+}
+
+func TestListRoleBindingsHandler_AdminRequiredReportsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"data":null,"error":"admin role required"}`))
+	}))
+	defer srv.Close()
+
+	backend := &mcpBackend{baseURL: srv.URL, client: srv.Client()}
+	result, err := listRoleBindingsHandler(backend)(t.Context(), mcp.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("handler itself should not error, got: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("want an error result when caller is not an admin")
+	}
+}
+
+func TestSetRoleBindingHandler_CreatesAndUpdates(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/admin/roles" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"id":"rb-2","subjectType":"team","subject":"acme/sre","role":"viewer","agents":["billing-agent"],"createdAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z"},"error":null}`))
+	}))
+	defer srv.Close()
+
+	backend := &mcpBackend{baseURL: srv.URL, client: srv.Client()}
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"subject_type": "team",
+		"subject":      "acme/sre",
+		"role":         "viewer",
+		"agents":       []any{"billing-agent"},
+	}
+	result, err := setRoleBindingHandler(backend)(t.Context(), req)
+	if err != nil {
+		t.Fatalf("setRoleBindingHandler: %v", err)
+	}
+	var out roleBindingMCP
+	structuredContent(t, result, &out)
+	if out.ID != "rb-2" || out.SubjectType != "team" || out.Subject != "acme/sre" || out.Role != "viewer" || len(out.Agents) != 1 {
+		t.Fatalf("unexpected role binding: %+v", out)
+	}
+	if gotBody["subjectType"] != "team" || gotBody["subject"] != "acme/sre" || gotBody["role"] != "viewer" {
+		t.Fatalf("unexpected request body sent: %+v", gotBody)
+	}
+	if _, hasID := gotBody["id"]; hasID {
+		t.Fatalf("id should be omitted from the request body when not creating an update, got: %+v", gotBody)
+	}
+}
+
+func TestDeleteRoleBindingHandler_Succeeds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/admin/roles/rb-1" || r.Method != http.MethodDelete {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"deleted":true},"error":null}`))
+	}))
+	defer srv.Close()
+
+	backend := &mcpBackend{baseURL: srv.URL, client: srv.Client()}
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"id": "rb-1"}
+	result, err := deleteRoleBindingHandler(backend)(t.Context(), req)
+	if err != nil {
+		t.Fatalf("deleteRoleBindingHandler: %v", err)
+	}
+	var out map[string]bool
+	structuredContent(t, result, &out)
+	if !out["deleted"] {
+		t.Fatalf("unexpected delete response: %+v", out)
+	}
+}

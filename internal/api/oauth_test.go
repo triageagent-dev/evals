@@ -233,7 +233,7 @@ func TestAuthCallbackHandler_FullFlow(t *testing.T) {
 			req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "xyz"})
 			rec := httptest.NewRecorder()
 
-			authCallbackHandler(cfg)(rec, req)
+			authCallbackHandler(cfg, nil)(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d (body: %s)", rec.Code, tt.wantStatus, rec.Body.String())
@@ -269,7 +269,7 @@ func TestAuthCallbackHandler_RejectsBadState(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "different"})
 	rec := httptest.NewRecorder()
 
-	authCallbackHandler(cfg)(rec, req)
+	authCallbackHandler(cfg, nil)(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -282,7 +282,7 @@ func TestAuthCallbackHandler_RejectsMissingCode(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "xyz"})
 	rec := httptest.NewRecorder()
 
-	authCallbackHandler(cfg)(rec, req)
+	authCallbackHandler(cfg, nil)(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)

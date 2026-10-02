@@ -98,13 +98,18 @@ func toMetricResultDTO(r eval.Result, kind, judgeModel string) metricResultDTO {
 }
 
 // traceResultDTO mirrors ui/src/lib/types.ts's TraceResult. Performance
-// metrics and agent-identity fields (agentName, model, provider, ...)
-// aren't populated yet - see README.md.
+// metrics aren't populated yet - see README.md. AgentName is additive over
+// the TS type (this port's own field, used only server-side by
+// persistCompletedRun to populate runSummaryDTO.Agents for per-agent role
+// scoping - see roles.go); it's still marshaled since Run History's own
+// TraceResult-shaped `partialResult` SSE payload has no fixed schema the
+// UI would choke on an extra key in.
 type traceResultDTO struct {
 	TraceID            string            `json:"traceId"`
 	NumInvocations     int               `json:"numInvocations"`
 	MetricResults      []metricResultDTO `json:"metricResults"`
 	ConversionWarnings []string          `json:"conversionWarnings"`
+	AgentName          string            `json:"agentName,omitempty"`
 }
 
 // runResultDTO mirrors ui/src/lib/types.ts's RunResult.
@@ -355,6 +360,10 @@ func evaluateHandler(store *SQLiteStore) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if !roleInfoOrOpen(r.Context()).CanWrite() {
+			writeEvaluateError(w, http.StatusForbidden, "viewer role cannot run evaluations")
+			return
+		}
 
 		req, status, msg := parseEvaluateRequest(r)
 		if r.MultipartForm != nil {
@@ -409,6 +418,10 @@ func evaluateStreamHandler(store *SQLiteStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !roleInfoOrOpen(r.Context()).CanWrite() {
+			writeEvaluateError(w, http.StatusForbidden, "viewer role cannot run evaluations")
 			return
 		}
 		flusher, ok := w.(http.Flusher)
@@ -531,6 +544,7 @@ func evaluateOneTrace(
 		// the UI reads conversionWarnings.length without optional chaining.
 		ConversionWarnings: append([]string{}, conv.Warnings...),
 		MetricResults:      []metricResultDTO{},
+		AgentName:          adk.ExtractTraceMetadata(tr, conv.Invocations).AgentName,
 	}
 
 	if len(conv.Invocations) == 0 {
