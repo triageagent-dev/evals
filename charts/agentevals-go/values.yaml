@@ -1,0 +1,93 @@
+# Deployment-specific values (project, hostname, client ID, registry) go in
+# a values file outside git - see deploy/values.example.yaml.
+
+image:
+  repository: ghcr.io/your-org/agentevals-go
+  # -- Defaults to Chart.appVersion; `make deploy` sets it to the image it built.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+serviceAccount:
+  # -- Created by the chart. Keep the name stable: a GKE Workload Identity
+  # binding is made against namespace/name.
+  name: agentevals-go
+  annotations: {}
+  # e.g. iam.gke.io/gcp-service-account: <gsa>@<project>.iam.gserviceaccount.com
+
+# -- Session/run-history SQLite database on a PersistentVolumeClaim. The
+# claim is kept on `helm uninstall` (resource-policy: keep).
+persistence:
+  claimName: agentevals-go-session-db
+  size: 1Gi
+  storageClass: ""
+  dbFile: agentevals-go-sessions.db
+
+# -- GitHub logins that are always admin (--admin-github-users).
+adminGithubUsers: []
+
+auth:
+  githubClientId: ""
+  githubOrg: ""
+  publicUrl: ""
+  # -- Secret holding GITHUB_CLIENT_SECRET.
+  githubClientSecret: agentevals-github-oauth
+  # -- Secret holding SESSION_SECRET (enables auth when set).
+  sessionSecret: agentevals-session-secret
+
+vertex:
+  enabled: true
+  project: ""
+  location: europe-west4
+
+# -- Optional Secret holding JEV_API_KEY for the Jev judge models.
+jevSecret: agentevals-jev
+
+extraEnv: []
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+podSecurityContext:
+  fsGroup: 65532
+
+# -- Gateway API HTTPRoutes. The UI is built unprefixed, so its assets and
+# API live at root paths; rootPaths lists the ones claimed on the shared
+# host. A new endpoint under /api needs an entry here.
+httpRoute:
+  enabled: false
+  hostname: ""
+  parentRef:
+    name: ""
+    namespace: ""
+    sectionName: ""
+  # -- Route name for the UI prefix + root paths.
+  name: agentevals
+  prefix: /evals
+  # -- Route name for the secondary alias prefix ("" to skip).
+  aliasName: agentevals-go
+  aliasPrefix: /evals-go
+  rootPaths:
+    - /assets
+    - /logo.svg
+    - /vite.svg
+    - /favicon.ico
+    - /ws
+    - /api/config
+    - /api/convert
+    - /api/debug
+    - /api/evaluate
+    - /api/evalsets
+    - /api/admin
+    - /api/health
+    - /api/metrics
+    - /api/runs
+    - /api/usage
+    - /api/streaming
+    - /api/validate
+    - /stream
+    - /auth

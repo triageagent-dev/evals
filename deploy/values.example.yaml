@@ -1,0 +1,29 @@
+# Copy to deploy/values.yaml (gitignored) and fill in your deployment.
+image:
+  repository: ghcr.io/your-org/agentevals-go
+imagePullSecrets:
+  - name: ghcr-pull
+serviceAccount:
+  name: agentevals-go
+  annotations:
+    iam.gke.io/gcp-service-account: your-gsa@your-gcp-project.iam.gserviceaccount.com
+persistence:
+  claimName: agentevals-go-session-db
+  size: 1Gi
+  storageClass: standard
+adminGithubUsers:
+  - your-github-login
+auth:
+  githubClientId: YOUR_GITHUB_OAUTH_CLIENT_ID
+  githubOrg: your-github-org
+  publicUrl: https://your-public-hostname.example.com
+vertex:
+  project: your-gcp-project
+  location: europe-west4
+httpRoute:
+  enabled: true
+  hostname: your-public-hostname.example.com
+  parentRef:
+    name: your-gateway
+    namespace: your-gateway-namespace
+    sectionName: http

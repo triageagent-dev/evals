@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agentevals-go
+description: agentevals-go - scores AI agent behaviour from OpenTelemetry traces (REST API + UI, OTLP receivers)
+type: application
+version: 0.1.0
+appVersion: "0.24.2"

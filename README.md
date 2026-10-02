@@ -60,7 +60,7 @@ curl -N http://localhost:8001/stream/ui-updates   # SSE - simplest way to tail t
 `final_response_match_v2`, `hallucinations_v1`, and `rubric_based_*_v1` need a judge model to call: a Gemini
 API key (`GEMINI_API_KEY`/`GOOGLE_API_KEY`, or `--judge-api-key`), or Vertex AI via Application Default
 Credentials (`GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT`/`GOOGLE_CLOUD_LOCATION`, no key at all -
-see [deploy/k8s.yaml.example](deploy/k8s.yaml.example) for a working Deployment):
+see the [Helm chart](charts/agentevals-go) for a working Deployment):
 
 ```bash
 export GEMINI_API_KEY=...
@@ -200,8 +200,9 @@ internal/incremental/        real-time span/log -> conversation-element update e
 internal/api/                   REST/UI server, OTLP/HTTP receiver, sessions (in-memory + optional SQLite archive), SSE hub
 ui/                                React UI, copied unmodified from agentevals/ui
 samples/                            helm.json / k8s.json / eval_set_helm.json, copied from agentevals/samples
-deploy/                              deploy/k8s.yaml.example: sanitized manifest template (copy to
-                                     deploy/k8s.yaml, gitignored, and fill in your own project/registry/hostname)
+charts/agentevals-go/                Helm chart (Deployment, Service, PVC, HTTPRoutes); `make image` + `make deploy`
+deploy/                              values.example.yaml: sanitized chart values (copy to deploy/values.yaml,
+                                     gitignored, and fill in your own project/registry/hostname)
 docs/                                 STATUS.md (full porting detail), images/ (README screenshots)
 ```
 

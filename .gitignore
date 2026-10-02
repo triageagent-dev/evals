@@ -6,8 +6,8 @@
 *.db-wal
 *.db-shm
 
-# Real deployment manifest: bakes in this deployment's actual GCP project,
-# service account, container registry, and public hostname - not meant for
-# a public repo. See deploy/k8s.yaml.example for a sanitized template with
-# placeholder values; copy it to deploy/k8s.yaml and fill in your own.
+# Real deployment values: this deployment's actual GCP project, service
+# account, container registry, and public hostname - not meant for a public
+# repo. Copy deploy/values.example.yaml to deploy/values.yaml and fill in.
+/deploy/values.yaml
 /deploy/k8s.yaml

@@ -189,7 +189,7 @@ func authLoginHandler(cfg *GitHubOAuthConfig) http.HandlerFunc {
 // member) must both deny, since "can't tell" is not a safe default for an
 // access gate. On success, mints and sets the same signed session cookie
 // requireSession validates, then redirects to /evals (this service's own
-// canonical UI path now - see deploy/k8s.yaml's HTTPRoute). roleStore, if
+// canonical UI path now - see charts/agentevals-go's HTTPRoute). roleStore, if
 // non-nil (RBAC configured - see server.go's Serve), also has this
 // user's GitHub team memberships resolved and cached here - the only
 // point this service ever holds their own GitHub access token, needed to

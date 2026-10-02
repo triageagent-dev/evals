@@ -84,4 +84,7 @@ streaming** path for the UI.
   testable with a scripted fake and no API key.
 - No CGO (`modernc.org/sqlite` is chosen for that; image is `cgr.dev/chainguard/static`). No dependency on
   Python or another runtime.
-- `deploy/k8s.yaml` is gitignored; edit `deploy/k8s.yaml.example` for anything meant to be committed.
+- Deploy is Helm + ko: `make image` (clean tree; builds `ui/dist`, ko-pushes `<BASE_VERSION>.<count>-<sha>`),
+  `make deploy-diff`, `make deploy`. Chart in `charts/agentevals-go`; real values in `deploy/values.yaml`
+  (gitignored), sanitized template `deploy/values.example.yaml`. A new root-level `/api/...` endpoint needs an
+  entry in `httpRoute.rootPaths` or the gateway answers 404.
