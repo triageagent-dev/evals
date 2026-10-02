@@ -112,9 +112,8 @@ export function LiveConversationPanel({ elements, isActive, invocations }: LiveC
     [invocations],
   );
   // Manual expand/collapse overrides, keyed by invocationId. Absent = default
-  // (only the most recent turn starts expanded; earlier ones start
-  // collapsed) - this is what keeps a long trace navigable instead of a
-  // wall of every turn's messages.
+  // (every turn starts collapsed, the last one too: a single turn's prompt
+  // can be a wall of text) - this is what keeps a long trace navigable.
   const [expandedOverrides, setExpandedOverrides] = useState<Record<string, boolean>>({});
 
   const sortedElements = useMemo(
@@ -229,7 +228,7 @@ export function LiveConversationPanel({ elements, isActive, invocations }: LiveC
 
         {turns.map((turn, i) => {
           const isLast = turn.invocationId === lastTurnId;
-          const isExpanded = expandedOverrides[turn.invocationId] ?? isLast;
+          const isExpanded = expandedOverrides[turn.invocationId] ?? false;
           const { preview, toolCount, toolErrorCount, toolLatencyMs, hasAgentResponse } = turnSummary(turn);
           const modelInfo = invocationsById.get(turn.invocationId)?.modelInfo;
           const tokens = (modelInfo?.inputTokens || modelInfo?.outputTokens)
