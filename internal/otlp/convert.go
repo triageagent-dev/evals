@@ -63,6 +63,13 @@ func parseSpan(spanData map[string]any, resourceAttrs map[string]any, scopeName,
 		attrs[k] = v
 	}
 
+	// Additive over Python: _parse_span drops the span status. It is kept as
+	// otel.status_code (the tag name Jaeger and the OTel Jaeger exporter use)
+	// so the usage view can count failed LLM calls.
+	if code := spanStatusCode(asMap(spanData["status"])); code != "" {
+		attrs[otelStatusCode] = code
+	}
+
 	startNs := decodeIntValue(spanData["startTimeUnixNano"])
 	endNs := decodeIntValue(spanData["endTimeUnixNano"])
 	startUs := startNs / 1000
@@ -82,6 +89,31 @@ func parseSpan(spanData map[string]any, resourceAttrs map[string]any, scopeName,
 		Duration:      durationUs,
 		Tags:          attrs,
 	}
+}
+
+const otelStatusCode = "otel.status_code"
+
+// spanStatusCode maps an OTLP status to "OK" or "ERROR" ("" for unset). The
+// OTLP/HTTP JSON encoding sends the code as an integer (1 OK, 2 ERROR);
+// the gRPC path, re-marshalled through protojson, sends the enum name.
+func spanStatusCode(status map[string]any) string {
+	switch v := status["code"].(type) {
+	case string:
+		switch v {
+		case "STATUS_CODE_OK", "1":
+			return "OK"
+		case "STATUS_CODE_ERROR", "2":
+			return "ERROR"
+		}
+	case float64:
+		switch v {
+		case 1:
+			return "OK"
+		case 2:
+			return "ERROR"
+		}
+	}
+	return ""
 }
 
 // buildTraces groups a flat span list by trace ID and resolves parent/child

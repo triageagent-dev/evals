@@ -281,7 +281,7 @@ export interface EvalSetSummary {
 }
 
 // View types
-export type ViewType = 'welcome' | 'upload' | 'dashboard' | 'inspector' | 'comparison' | 'builder' | 'streaming' | 'annotation-queue' | 'runs';
+export type ViewType = 'welcome' | 'upload' | 'dashboard' | 'inspector' | 'comparison' | 'builder' | 'streaming' | 'annotation-queue' | 'runs' | 'usage';
 
 // Persisted run history (durable storage, GET /api/runs)
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -652,4 +652,42 @@ export interface AnnotationQueue {
   name: string;
   items: AnnotationQueueItem[];
   createdAt: string;
+}
+
+// Token usage ledger (GET /api/usage, GET /api/usage/calls) - additive over
+// Python. One cell per (time bucket, service, tenant, call kind, model).
+export interface UsageBucket {
+  start: number;
+  service: string;
+  tenant: string;
+  kind: string;
+  model: string;
+  calls: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+}
+
+export interface UsageSeries {
+  from: number;
+  to: number;
+  bucketMs: number;
+  buckets: UsageBucket[];
+}
+
+export interface UsageCall {
+  spanId: string;
+  traceId: string;
+  sessionId: string;
+  start: number;
+  durationMs: number;
+  service: string;
+  tenant: string;
+  kind: string;
+  model: string;
+  name: string;
+  inputTokens: number;
+  outputTokens: number;
+  isError: boolean;
 }

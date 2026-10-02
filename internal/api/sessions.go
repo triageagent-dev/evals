@@ -167,6 +167,16 @@ type SessionStore struct {
 	changeSeq        uint64
 	lastPersistedSeq uint64
 	persistedSeq     map[string]uint64
+
+	// pendingUsage holds ledger rows (usagestore.go) for LLM spans ingested
+	// since the last flushPersist, which writes them alongside the session
+	// snapshots. Only collected when an archive is configured. Touched with
+	// mu held.
+	pendingUsage []usageRow
+	// usageRetention bounds the ledger; lastUsagePrune rate-limits the
+	// prune to once a day.
+	usageRetention time.Duration
+	lastUsagePrune time.Time
 }
 
 func NewSessionStore(hub *sseHub) *SessionStore {
@@ -198,6 +208,7 @@ func (s *SessionStore) markChangedLocked(session *Session) {
 func NewSessionStoreWithArchive(hub *sseHub, store *SQLiteStore) *SessionStore {
 	s := NewSessionStore(hub)
 	s.store = store
+	s.usageRetention = DefaultUsageRetention
 	return s
 }
 
@@ -222,6 +233,21 @@ func (s *SessionStore) LoadPersisted() error {
 	snapshots, err := s.store.LoadAll()
 	if err != nil {
 		return fmt.Errorf("loading session archive: %w", err)
+	}
+
+	// Backfill the usage ledger from archived spans, so token history
+	// starts with the archive rather than with the first deploy that has
+	// the ledger. INSERT OR IGNORE makes this a no-op on later restarts.
+	var backfill []usageRow
+	for id, snap := range snapshots {
+		for _, span := range snap.Spans {
+			if row, ok := usageRowFromSpan(span, id); ok {
+				backfill = append(backfill, row)
+			}
+		}
+	}
+	if err := s.store.InsertUsage(backfill); err != nil {
+		return fmt.Errorf("backfilling usage ledger: %w", err)
 	}
 
 	s.mu.Lock()
@@ -299,6 +325,10 @@ func (s *SessionStore) StartPersistence(interval time.Duration, stop <-chan stru
 // retried next tick, exactly as before this optimization existed (when
 // every tick unconditionally retried everything).
 func (s *SessionStore) flushPersist() error {
+	if err := s.flushUsage(); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	seq := s.changeSeq
 	if seq == s.lastPersistedSeq {
@@ -331,6 +361,35 @@ func (s *SessionStore) flushPersist() error {
 		s.lastPersistedSeq = seq
 	}
 	s.mu.Unlock()
+	return nil
+}
+
+// flushUsage writes buffered usage rows and, at most once a day, prunes
+// rows older than usageRetention. Rows go back into the buffer when the
+// write fails, so the next tick retries them.
+func (s *SessionStore) flushUsage() error {
+	s.mu.Lock()
+	rows := s.pendingUsage
+	s.pendingUsage = nil
+	prune := s.usageRetention > 0 && time.Since(s.lastUsagePrune) >= 24*time.Hour
+	if prune {
+		s.lastUsagePrune = time.Now()
+	}
+	s.mu.Unlock()
+
+	if err := s.store.InsertUsage(rows); err != nil {
+		s.mu.Lock()
+		s.pendingUsage = append(rows, s.pendingUsage...)
+		s.mu.Unlock()
+		return fmt.Errorf("writing usage ledger: %w", err)
+	}
+	if prune {
+		if n, err := s.store.PruneUsage(time.Now().Add(-s.usageRetention)); err != nil {
+			log.Printf("usage ledger: prune failed: %v", err)
+		} else if n > 0 {
+			log.Printf("usage ledger: pruned %d row(s) older than %s", n, s.usageRetention)
+		}
+	}
 	return nil
 }
 
@@ -415,6 +474,11 @@ func (s *SessionStore) Ingest(body map[string]any) int {
 				session.Spans = append(session.Spans, span)
 				s.markChangedLocked(session)
 				ingested++
+				if s.store != nil {
+					if row, ok := usageRowFromSpan(span, session.ID); ok {
+						s.pendingUsage = append(s.pendingUsage, row)
+					}
+				}
 
 				if s.hub != nil {
 					s.hub.broadcast(spanReceivedEvent{Type: "span_received", SessionID: session.ID, Span: spanToDTO(span)})

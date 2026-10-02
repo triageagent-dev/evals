@@ -10,6 +10,8 @@ import type {
   RunResultRow,
   EvalSet,
   EvalSetSummary,
+  UsageSeries,
+  UsageCall,
 } from '../lib/types';
 import { config } from '../config';
 import { evalSetFromWireFormat, evalSetToWireFormat } from '../lib/evalset-builder';
@@ -400,4 +402,18 @@ export async function healthCheck(): Promise<{ status: string; version: string }
     console.error('Health check failed:', error);
     throw error;
   }
+}
+
+export async function getUsage(hours: number): Promise<UsageSeries> {
+  const response = await fetch(`${config.api.endpoints.usage}?hours=${hours}`);
+  if (response.status === 503) throw new StorageUnavailableError();
+  if (!response.ok) throw new Error(`Failed to load usage: ${httpStatusLabel(response)}`);
+  return unwrap<UsageSeries>(response);
+}
+
+export async function getUsageCalls(hours: number, limit = 25): Promise<UsageCall[]> {
+  const response = await fetch(`${config.api.endpoints.usage}/calls?hours=${hours}&limit=${limit}`);
+  if (response.status === 503) throw new StorageUnavailableError();
+  if (!response.ok) throw new Error(`Failed to load top calls: ${httpStatusLabel(response)}`);
+  return unwrap<UsageCall[]>(response);
 }

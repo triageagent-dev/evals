@@ -171,6 +171,17 @@
   everyone until an admin actually adds bindings. Bootstrap admins are seeded idempotently from
   `--admin-github-users`/`AGENTEVALS_ADMIN_GITHUB_USERS` (comma-separated GitHub logins) on every `serve`
   startup. Manageable from `agentevals mcp` too - see below.
+- **Token Usage view** (`internal/api/usage.go`, `usagestore.go`, `ui/src/components/usage/UsageView.tsx`) -
+  additive over Python. Every ingested LLM span that reports tokens (GenAI `gen_ai.usage.*` or OpenInference
+  `llm.token_count.*`) becomes one row of an `llm_calls` ledger in the session SQLite file, keyed by span ID
+  (`INSERT OR IGNORE`, so retried exports and restarts never double count; AGENT/CHAIN parents carry no row).
+  Rows record service, `triage.tenant`, `triage.llm.call_kind`, model, tokens, duration and span status
+  (`otel.status_code`, which the OTLP converter now keeps - Python's `_parse_span` drops it). On startup the
+  ledger is backfilled from the archived sessions; rows older than 90 days are pruned daily.
+  `GET /api/usage?hours=N` returns (bucket, service, tenant, kind, model) cells, hourly up to four days and daily
+  beyond; `GET /api/usage/calls` lists the largest calls. The UI view shows totals, estimated cost
+  (`lib/pricing.ts`), tokens over time stacked by kind/tenant/model/service, a breakdown table and the largest
+  calls. Needs `--session-db`; returns 503 without it.
 - **MCP server** (`cmd/agentevals/mcp.go`, `agentevals mcp`) - a stdio Model Context Protocol server (via
   [`github.com/mark3labs/mcp-go`](https://pkg.go.dev/github.com/mark3labs/mcp-go)), ported from
   `mcp_server.py`'s `create_server`: `list_metrics`, `evaluate_traces` (fully offline - loads trace files

@@ -59,6 +59,10 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureUsageSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := ensureRolesSchema(db); err != nil {
 		db.Close()
 		return nil, err

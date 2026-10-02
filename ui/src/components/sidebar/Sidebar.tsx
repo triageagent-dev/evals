@@ -1,13 +1,13 @@
 import React, { useRef, useState } from 'react';
 import { css } from '@emotion/react';
-import { Radio, Play, FileJson, Bug, History } from 'lucide-react';
+import { Radio, Play, FileJson, Bug, History, Coins } from 'lucide-react';
 import { useTraceContext } from '../../context/TraceContext';
 import type { ViewType } from '../../lib/types';
 import { BugReportModal } from '../bug-report/BugReportModal';
 import { loadBugReport } from '../../api/client';
 import { UserMenu } from './UserMenu';
 
-type SidebarSection = 'streaming' | 'offline' | 'builder' | 'runs';
+type SidebarSection = 'streaming' | 'offline' | 'builder' | 'runs' | 'usage';
 
 function getActiveSection(currentView: ViewType): SidebarSection | null {
   switch (currentView) {
@@ -19,6 +19,7 @@ function getActiveSection(currentView: ViewType): SidebarSection | null {
       return 'offline';
     case 'builder': return 'builder';
     case 'runs': return 'runs';
+    case 'usage': return 'usage';
     default: return null;
   }
 }
@@ -75,6 +76,14 @@ export const Sidebar: React.FC = () => {
           >
             <History size={18} />
             Run History
+          </button>
+
+          <button
+            css={[navItemStyle, activeSection === 'usage' && activeItemStyle]}
+            onClick={() => actions.setCurrentView('usage')}
+          >
+            <Coins size={18} />
+            Token Usage
           </button>
 
           <button
