@@ -169,7 +169,7 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
                 fontSize: '11px',
                 fontWeight: 600,
                 color: 'var(--text-primary)',
-                background: 'var(--bg-primary)',
+                background: 'rgba(148, 163, 184, 0.18)',
                 padding: '4px 10px',
                 borderRadius: '6px',
               }}>
@@ -195,7 +195,7 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
                 fontSize: '11px',
                 fontWeight: 600,
                 color: 'var(--text-primary)',
-                background: 'var(--bg-primary)',
+                background: 'rgba(148, 163, 184, 0.18)',
                 padding: '4px 10px',
                 borderRadius: '6px',
                 fontVariantNumeric: 'tabular-nums',
@@ -209,7 +209,7 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
                 fontSize: '11px',
                 fontWeight: 600,
                 color: 'var(--text-primary)',
-                background: 'var(--bg-primary)',
+                background: 'rgba(148, 163, 184, 0.18)',
                 padding: '4px 10px',
                 borderRadius: '6px',
               }}>
