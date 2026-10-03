@@ -182,6 +182,13 @@
   beyond; `GET /api/usage/calls` lists the largest calls. The UI view shows totals, estimated cost
   (`lib/pricing.ts`), tokens over time stacked by kind/tenant/model/service, a breakdown table and the largest
   calls. Needs `--session-db`; returns 503 without it.
+- **Session memory cap and retention** (`internal/api/sessions.go`'s `evictLocked`/`lookupLocked`/
+  `pruneSessions`, `sqlitestore.go`'s `LoadRecent`/`Load`/`PruneSessions`/`Compact`) - additive over Python, which
+  restores the whole archive into memory and keeps every session forever. With `--session-db`, only the newest
+  `--session-memory` completed sessions (default 200) stay in memory; older ones are evicted once archived and
+  read back by ID on demand (trace, spans, a new span reopening them). The session list shows the in-memory
+  ones. `--session-retention` (default 720h) deletes sessions not updated for that long once a day, then
+  checkpoints the WAL and VACUUMs. The usage backfill runs only while the ledger is empty, streaming the archive.
 - **Span attributes and errors** (`internal/api/server.go`'s `sessionSpansHandler`, `SessionStore.SpanRows`,
   `ui/src/components/streaming/SpansPanel.tsx`) - additive over Python. The OTLP converter also keeps the span
   status message as `otel.status_description` and the first `exception` event's attributes

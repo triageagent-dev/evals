@@ -59,7 +59,9 @@ streaming** path for the UI.
     (SDK ingestion channel, not ported).
   - Persistence is opt-in (`--session-db` / `AGENTEVALS_SESSION_DB_PATH`): one `SQLiteStore` holds sessions
     (whole-session JSON blob per row - adding a `Session` field needs no migration), run history
-    (`runsstore.go`), eval sets (`evalsetsstore.go`), and role bindings (`rolesstore.go`).
+    (`runsstore.go`), eval sets (`evalsetsstore.go`), and role bindings (`rolesstore.go`). Only the newest
+    `--session-memory` completed sessions (default 200) live in memory; older ones are read back by ID on demand
+    (`lookupLocked`). `--session-retention` (default 30 days) deletes stale sessions daily, then VACUUMs.
   - Auth (`oauth.go`, `sessionauth.go`, `githubtoken.go`) is active only with `--session-secret` /
     `AGENTEVALS_SESSION_SECRET`: GitHub OAuth signed cookie, or bearer tokens (minted via `auth mint-token`,
     or a raw GitHub token validated against org membership). `server.go` wraps the main mux in

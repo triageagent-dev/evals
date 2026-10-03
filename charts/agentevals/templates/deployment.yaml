@@ -35,6 +35,8 @@ spec:
             - --otlp-grpc-addr=:4317
             - --health-addr=:9090
             - --session-db=/data/{{ .Values.persistence.dbFile }}
+            - --session-memory={{ .Values.persistence.memorySessions }}
+            - --session-retention={{ .Values.persistence.retention }}
             {{- with .Values.adminGithubUsers }}
             - --admin-github-users={{ join "," . }}
             {{- end }}

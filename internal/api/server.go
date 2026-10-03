@@ -90,10 +90,11 @@ const persistInterval = 10 * time.Second
 // ws_server.py's StreamingTraceManager(sqlite_path=...); see
 // AGENTEVALS_SESSION_DB_PATH in the Python CLI) - role bindings persist in
 // the same file when it's configured, in-memory-only for this process's
-// lifetime otherwise. Blocks until any listener returns an error or the
+// lifetime otherwise. limits caps the completed sessions kept in memory
+// and how long archived sessions are kept (see SessionLimits). Blocks until any listener returns an error or the
 // process receives SIGINT/SIGTERM, in which case it flushes a final
 // snapshot before returning.
-func Serve(addr, otlpAddr, otlpGRPCAddr, healthAddr, sessionDBPath, sessionSecret string, githubOAuth *GitHubOAuthConfig, adminGitHubUsers []string, defaultRole string) error {
+func Serve(addr, otlpAddr, otlpGRPCAddr, healthAddr, sessionDBPath, sessionSecret string, githubOAuth *GitHubOAuthConfig, adminGitHubUsers []string, defaultRole string, limits SessionLimits) error {
 	hub := newSSEHub()
 
 	var store *SessionStore
@@ -104,7 +105,7 @@ func Serve(addr, otlpAddr, otlpGRPCAddr, healthAddr, sessionDBPath, sessionSecre
 		if err != nil {
 			return fmt.Errorf("opening session archive: %w", err)
 		}
-		store = NewSessionStoreWithArchive(hub, archive)
+		store = NewSessionStoreWithArchive(hub, archive, limits)
 		if err := store.LoadPersisted(); err != nil {
 			return err
 		}

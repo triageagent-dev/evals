@@ -17,7 +17,7 @@ func TestSessionPersistence_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening archive: %v", err)
 	}
-	store1 := NewSessionStoreWithArchive(nil, archive1)
+	store1 := NewSessionStoreWithArchive(nil, archive1, SessionLimits{})
 
 	store1.Ingest(sampleTracesBody("persisted-sess", "aaaa", "span-a"))
 	if err := store1.flushPersist(); err != nil {
@@ -32,7 +32,7 @@ func TestSessionPersistence_RoundTrip(t *testing.T) {
 		t.Fatalf("reopening archive: %v", err)
 	}
 	defer archive2.Close()
-	store2 := NewSessionStoreWithArchive(nil, archive2)
+	store2 := NewSessionStoreWithArchive(nil, archive2, SessionLimits{})
 	if err := store2.LoadPersisted(); err != nil {
 		t.Fatalf("LoadPersisted: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestSessionPersistence_RestoredIncompleteSessionEventuallyCompletes(t *test
 	if err != nil {
 		t.Fatalf("opening archive: %v", err)
 	}
-	store1 := NewSessionStoreWithArchive(nil, archive1)
+	store1 := NewSessionStoreWithArchive(nil, archive1, SessionLimits{})
 	store1.completionGrace = time.Hour // never fires: persist while still "active"
 
 	store1.Ingest(sampleTracesBody("stale-sess", "aaaa", "span-a"))
@@ -91,7 +91,7 @@ func TestSessionPersistence_RestoredIncompleteSessionEventuallyCompletes(t *test
 		t.Fatalf("reopening archive: %v", err)
 	}
 	defer archive2.Close()
-	store2 := NewSessionStoreWithArchive(nil, archive2)
+	store2 := NewSessionStoreWithArchive(nil, archive2, SessionLimits{})
 	store2.idleTimeout = 10 * time.Millisecond
 	if err := store2.LoadPersisted(); err != nil {
 		t.Fatalf("LoadPersisted: %v", err)
@@ -111,7 +111,7 @@ func TestSQLiteStore_Delete(t *testing.T) {
 	}
 	defer archive.Close()
 
-	store := NewSessionStoreWithArchive(nil, archive)
+	store := NewSessionStoreWithArchive(nil, archive, SessionLimits{})
 	store.Ingest(sampleTracesBody("to-delete", "aaaa", "span-a"))
 	if err := store.flushPersist(); err != nil {
 		t.Fatalf("flushPersist: %v", err)
@@ -121,11 +121,11 @@ func TestSQLiteStore_Delete(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	snapshots, err := archive.LoadAll()
+	_, ok, err := archive.Load("to-delete")
 	if err != nil {
-		t.Fatalf("LoadAll: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
-	if _, ok := snapshots["to-delete"]; ok {
+	if ok {
 		t.Error("deleted session still present in archive")
 	}
 }
@@ -142,7 +142,7 @@ func TestFlushPersist_SkipsWhenNothingChanged(t *testing.T) {
 	}
 	defer archive.Close()
 
-	store := NewSessionStoreWithArchive(nil, archive)
+	store := NewSessionStoreWithArchive(nil, archive, SessionLimits{})
 	store.Ingest(sampleTracesBody("sess-a", "aaaa", "span-a"))
 
 	if err := store.flushPersist(); err != nil {
@@ -178,7 +178,7 @@ func TestFlushPersist_OnlyPersistsChangedSession(t *testing.T) {
 	}
 	defer archive.Close()
 
-	store := NewSessionStoreWithArchive(nil, archive)
+	store := NewSessionStoreWithArchive(nil, archive, SessionLimits{})
 	store.Ingest(sampleTracesBody("sess-a", "aaaa", "span-a"))
 	store.Ingest(sampleTracesBody("sess-b", "bbbb", "span-b"))
 	if err := store.flushPersist(); err != nil {

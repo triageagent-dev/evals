@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -50,6 +51,12 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	)`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("creating sessions table: %w", err)
+	}
+	// updated_at drives the newest-first restore (LoadRecent) and the
+	// retention prune (PruneSessions).
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("creating sessions.updated_at index: %w", err)
 	}
 	if err := ensureRunsSchema(db); err != nil {
 		db.Close()
@@ -169,16 +176,25 @@ func (s *SQLiteStore) Delete(sessionID string) error {
 	return err
 }
 
-// LoadAll returns every archived session's snapshot. A row that fails to
-// deserialize is logged and skipped rather than aborting the whole load.
-func (s *SQLiteStore) LoadAll() (map[string]sessionSnapshot, error) {
-	rows, err := s.db.Query("SELECT session_id, data FROM sessions")
+// LoadRecent returns the limit most recently updated sessions' snapshots
+// (every session when limit <= 0), oldest first. Additive over Python,
+// which restores the whole archive: only the newest sessions are kept in
+// memory, older ones are read on demand with Load. A row that fails to
+// deserialize is logged and skipped rather than aborting the load.
+func (s *SQLiteStore) LoadRecent(limit int) ([]sessionSnapshot, error) {
+	q := "SELECT session_id, data FROM sessions ORDER BY updated_at DESC"
+	args := []any{}
+	if limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	result := map[string]sessionSnapshot{}
+	var result []sessionSnapshot
 	for rows.Next() {
 		var id, data string
 		if err := rows.Scan(&id, &data); err != nil {
@@ -189,9 +205,77 @@ func (s *SQLiteStore) LoadAll() (map[string]sessionSnapshot, error) {
 			log.Printf("session archive: failed to deserialize session %s: %v", id, err)
 			continue
 		}
-		result[id] = snap
+		result = append(result, snap)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
+		result[i], result[j] = result[j], result[i]
+	}
+	return result, nil
+}
+
+// Load returns one archived session's snapshot; ok is false when it is not
+// archived.
+func (s *SQLiteStore) Load(sessionID string) (snap sessionSnapshot, ok bool, err error) {
+	var data string
+	err = s.db.QueryRow("SELECT data FROM sessions WHERE session_id = ?", sessionID).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return snap, false, nil
+	}
+	if err != nil {
+		return snap, false, err
+	}
+	if err := json.Unmarshal([]byte(data), &snap); err != nil {
+		return snap, false, fmt.Errorf("deserializing session %s: %w", sessionID, err)
+	}
+	return snap, true, nil
+}
+
+// ForEachSnapshot calls fn for every archived session, one row at a time,
+// so a full pass (the usage backfill) never holds the archive in memory.
+func (s *SQLiteStore) ForEachSnapshot(fn func(sessionSnapshot)) error {
+	rows, err := s.db.Query("SELECT session_id, data FROM sessions")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return err
+		}
+		var snap sessionSnapshot
+		if err := json.Unmarshal([]byte(data), &snap); err != nil {
+			log.Printf("session archive: failed to deserialize session %s: %v", id, err)
+			continue
+		}
+		fn(snap)
+	}
+	return rows.Err()
+}
+
+// PruneSessions deletes sessions last updated before cutoff.
+func (s *SQLiteStore) PruneSessions(cutoff time.Time) (int64, error) {
+	res, err := s.db.Exec("DELETE FROM sessions WHERE updated_at < ?", cutoff.UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// Compact returns freed pages to the filesystem after a prune: checkpoint
+// the WAL into the main file, then VACUUM. VACUUM rewrites the whole file,
+// so it runs only after rows were actually deleted.
+func (s *SQLiteStore) Compact() error {
+	if _, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return fmt.Errorf("checkpointing WAL: %w", err)
+	}
+	if _, err := s.db.Exec("VACUUM"); err != nil {
+		return fmt.Errorf("vacuum: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying database handle.

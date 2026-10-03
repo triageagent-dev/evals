@@ -22,6 +22,12 @@ persistence:
   size: 1Gi
   storageClass: ""
   dbFile: agentevals-sessions.db
+  # -- Completed sessions kept in memory; older ones stay in the database
+  # and load on demand (0 = no cap). Memory use grows with this.
+  memorySessions: 200
+  # -- Delete sessions not updated for this long, daily, then compact the
+  # file (Go duration; "0" = keep forever).
+  retention: 720h
 
 # -- GitHub logins that are always admin (--admin-github-users).
 adminGithubUsers: []

@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -208,4 +209,15 @@ func (s *SQLiteStore) TopUsageCalls(from, to time.Time, limit int) ([]usageCallD
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// UsageEmpty reports whether the ledger has no rows yet - the one time the
+// startup backfill from the archive is worth its full pass.
+func (s *SQLiteStore) UsageEmpty() (bool, error) {
+	var one int
+	err := s.db.QueryRow("SELECT 1 FROM llm_calls LIMIT 1").Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	return false, err
 }

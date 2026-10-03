@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -211,6 +212,30 @@ type SessionStore struct {
 	// prune to once a day.
 	usageRetention time.Duration
 	lastUsagePrune time.Time
+
+	// maxMemory caps the completed sessions held in memory (0 = no cap);
+	// active sessions always stay. Older completed sessions are evicted
+	// once durably archived and read back on demand (lookupLocked).
+	// sessionRetention deletes archived sessions not updated for that long
+	// (0 = keep forever), once a day, then compacts the file. Additive over
+	// Python, which keeps every session in memory forever.
+	maxMemory        int
+	sessionRetention time.Duration
+	lastSessionPrune time.Time
+}
+
+// Defaults for SessionLimits: the newest 200 completed sessions in memory,
+// archived sessions kept 30 days.
+const (
+	DefaultSessionMemory    = 200
+	DefaultSessionRetention = 30 * 24 * time.Hour
+)
+
+// SessionLimits bounds the session store: how many completed sessions stay
+// in memory and how long archived sessions are kept.
+type SessionLimits struct {
+	Memory    int
+	Retention time.Duration
 }
 
 func NewSessionStore(hub *sseHub) *SessionStore {
@@ -239,10 +264,12 @@ func (s *SessionStore) markChangedLocked(session *Session) {
 // begin periodic snapshots; ported from ws_server.py's
 // StreamingTraceManager(sqlite_path=...) + load_persisted_sessions +
 // start_persistence_task.
-func NewSessionStoreWithArchive(hub *sseHub, store *SQLiteStore) *SessionStore {
+func NewSessionStoreWithArchive(hub *sseHub, store *SQLiteStore, limits SessionLimits) *SessionStore {
 	s := NewSessionStore(hub)
 	s.store = store
 	s.usageRetention = DefaultUsageRetention
+	s.maxMemory = limits.Memory
+	s.sessionRetention = limits.Retention
 	return s
 }
 
@@ -264,53 +291,49 @@ func (s *SessionStore) LoadPersisted() error {
 	if s.store == nil {
 		return nil
 	}
-	snapshots, err := s.store.LoadAll()
+
+	// Backfill the usage ledger from archived spans, so token history
+	// starts with the archive rather than with the first deploy that has
+	// the ledger. Only while the ledger is empty: once it has rows, every
+	// new LLM span is ledgered as it arrives, and a full pass over the
+	// archive on every start is wasted work. Streams one session at a time.
+	empty, err := s.store.UsageEmpty()
+	if err != nil {
+		return fmt.Errorf("checking usage ledger: %w", err)
+	}
+	if empty {
+		var backfill []usageRow
+		if err := s.store.ForEachSnapshot(func(snap sessionSnapshot) {
+			for _, span := range snap.Spans {
+				if row, ok := usageRowFromSpan(span, snap.SessionID); ok {
+					backfill = append(backfill, row)
+				}
+			}
+		}); err != nil {
+			return fmt.Errorf("reading session archive for usage backfill: %w", err)
+		}
+		if err := s.store.InsertUsage(backfill); err != nil {
+			return fmt.Errorf("backfilling usage ledger: %w", err)
+		}
+	}
+
+	// Only the newest sessions come back into memory; the rest stay in the
+	// archive and are read on demand. A few extra beyond maxMemory leave
+	// room for still-active sessions among the newest.
+	limit := 0
+	if s.maxMemory > 0 {
+		limit = s.maxMemory + 50
+	}
+	snapshots, err := s.store.LoadRecent(limit)
 	if err != nil {
 		return fmt.Errorf("loading session archive: %w", err)
 	}
 
-	// Backfill the usage ledger from archived spans, so token history
-	// starts with the archive rather than with the first deploy that has
-	// the ledger. INSERT OR IGNORE makes this a no-op on later restarts.
-	var backfill []usageRow
-	for id, snap := range snapshots {
-		for _, span := range snap.Spans {
-			if row, ok := usageRowFromSpan(span, id); ok {
-				backfill = append(backfill, row)
-			}
-		}
-	}
-	if err := s.store.InsertUsage(backfill); err != nil {
-		return fmt.Errorf("backfilling usage ledger: %w", err)
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, snap := range snapshots {
-		traceIDs := make(map[string]struct{}, len(snap.TraceIDs))
-		for _, tid := range snap.TraceIDs {
-			traceIDs[tid] = struct{}{}
-		}
-		s.sessions[id] = &Session{
-			ID:             snap.SessionID,
-			PrimaryTraceID: snap.TraceID,
-			EvalSetID:      snap.EvalSetID,
-			Metadata:       snap.Metadata,
-			TraceIDs:       traceIDs,
-			Spans:          snap.Spans,
-			StartedAt:      snap.StartedAt,
-			HasRootSpan:    snap.HasRootSpan,
-			IsComplete:     snap.IsComplete,
-			CompletedAt:    snap.CompletedAt,
-			extractor:      incremental.New(),
-		}
-		if snap.IsComplete {
-			// Persisted snapshots predate this converter (or were archived
-			// before invocations existed) - recompute rather than leaving
-			// completed sessions permanently without detail after restart.
-			trace := otlp.BuildTrace(id, snap.Spans)
-			s.sessions[id].Invocations = extractInvocationsForUI(trace)
-		}
+	for _, snap := range snapshots {
+		id := snap.SessionID
+		s.sessions[id] = restoreSession(snap)
 		s.order = append(s.order, id)
 		if !snap.IsComplete {
 			s.resetIdleTimerLocked(id)
@@ -320,6 +343,57 @@ func (s *SessionStore) LoadPersisted() error {
 		log.Printf("restored %d session(s) from archive", len(snapshots))
 	}
 	return nil
+}
+
+// restoreSession rebuilds a Session from its archived snapshot, with a
+// fresh extractor (see sessionSnapshot) and, for a completed session, its
+// invocations recomputed from the spans.
+func restoreSession(snap sessionSnapshot) *Session {
+	traceIDs := make(map[string]struct{}, len(snap.TraceIDs))
+	for _, tid := range snap.TraceIDs {
+		traceIDs[tid] = struct{}{}
+	}
+	sess := &Session{
+		ID:             snap.SessionID,
+		PrimaryTraceID: snap.TraceID,
+		EvalSetID:      snap.EvalSetID,
+		Metadata:       snap.Metadata,
+		TraceIDs:       traceIDs,
+		Spans:          snap.Spans,
+		StartedAt:      snap.StartedAt,
+		HasRootSpan:    snap.HasRootSpan,
+		IsComplete:     snap.IsComplete,
+		CompletedAt:    snap.CompletedAt,
+		extractor:      incremental.New(),
+	}
+	if snap.IsComplete {
+		// Persisted snapshots predate this converter (or were archived
+		// before invocations existed) - recompute rather than leaving
+		// completed sessions permanently without detail after restart.
+		sess.Invocations = extractInvocationsForUI(otlp.BuildTrace(snap.SessionID, snap.Spans))
+	}
+	return sess
+}
+
+// lookupLocked returns a session from memory or, when it was evicted, read
+// back from the archive (not re-added to memory). Must be called with s.mu
+// held.
+func (s *SessionStore) lookupLocked(sessionID string) (*Session, bool) {
+	if sess, ok := s.sessions[sessionID]; ok {
+		return sess, true
+	}
+	if s.store == nil {
+		return nil, false
+	}
+	snap, ok, err := s.store.Load(sessionID)
+	if err != nil {
+		log.Printf("session archive: loading %s: %v", sessionID, err)
+		return nil, false
+	}
+	if !ok {
+		return nil, false
+	}
+	return restoreSession(snap), true
 }
 
 // StartPersistence begins a background loop snapshotting every session to
@@ -394,8 +468,102 @@ func (s *SessionStore) flushPersist() error {
 	if seq > s.lastPersistedSeq {
 		s.lastPersistedSeq = seq
 	}
+	s.evictLocked()
 	s.mu.Unlock()
+	s.pruneSessions()
 	return nil
+}
+
+// evictLocked drops the oldest completed sessions from memory while more
+// than maxMemory are held. Only sessions already durably archived (their
+// changeSeq persisted) with no pending timer go; they stay readable via
+// lookupLocked. Must be called with s.mu held.
+func (s *SessionStore) evictLocked() {
+	if s.maxMemory <= 0 || s.store == nil {
+		return
+	}
+	var done []*Session
+	for _, sess := range s.sessions {
+		if sess.IsComplete {
+			done = append(done, sess)
+		}
+	}
+	excess := len(done) - s.maxMemory
+	if excess <= 0 {
+		return
+	}
+	sort.Slice(done, func(i, j int) bool { return sessionAge(done[i]).Before(sessionAge(done[j])) })
+	evicted := map[string]bool{}
+	for _, sess := range done {
+		if len(evicted) == excess {
+			break
+		}
+		id := sess.ID
+		if sess.changeSeq > s.persistedSeq[id] || s.idleTimers[id] != nil || s.completionTimers[id] != nil {
+			continue
+		}
+		evicted[id] = true
+		delete(s.sessions, id)
+		delete(s.persistedSeq, id)
+	}
+	if len(evicted) == 0 {
+		return
+	}
+	order := s.order[:0]
+	for _, id := range s.order {
+		if !evicted[id] {
+			order = append(order, id)
+		}
+	}
+	s.order = order
+}
+
+func sessionAge(sess *Session) time.Time {
+	if sess.CompletedAt != nil {
+		return *sess.CompletedAt
+	}
+	return sess.StartedAt
+}
+
+// pruneSessions deletes archived sessions older than sessionRetention, at
+// most once a day, drops them from memory too, and compacts the file when
+// anything was deleted.
+func (s *SessionStore) pruneSessions() {
+	s.mu.Lock()
+	due := s.store != nil && s.sessionRetention > 0 && time.Since(s.lastSessionPrune) >= 24*time.Hour
+	if due {
+		s.lastSessionPrune = time.Now()
+	}
+	s.mu.Unlock()
+	if !due {
+		return
+	}
+	cutoff := time.Now().Add(-s.sessionRetention)
+	n, err := s.store.PruneSessions(cutoff)
+	if err != nil {
+		log.Printf("session archive: prune failed: %v", err)
+		return
+	}
+	if n == 0 {
+		return
+	}
+	s.mu.Lock()
+	order := s.order[:0]
+	for _, id := range s.order {
+		sess := s.sessions[id]
+		if sess.IsComplete && sessionAge(sess).Before(cutoff) && sess.changeSeq <= s.persistedSeq[id] {
+			delete(s.sessions, id)
+			delete(s.persistedSeq, id)
+			continue
+		}
+		order = append(order, id)
+	}
+	s.order = order
+	s.mu.Unlock()
+	if err := s.store.Compact(); err != nil {
+		log.Printf("session archive: compact failed: %v", err)
+	}
+	log.Printf("session archive: pruned %d session(s) older than %s and compacted", n, s.sessionRetention)
 }
 
 // flushUsage writes buffered usage rows and, at most once a day, prunes
@@ -538,6 +706,16 @@ func (s *SessionStore) Ingest(body map[string]any) int {
 
 func (s *SessionStore) getOrCreateSession(name, traceID, evalSetID string, resourceAttrs map[string]any) (*Session, bool) {
 	session := s.sessions[name]
+	if session == nil {
+		// A span for a session evicted from memory: bring it back rather
+		// than starting a second session under the same name.
+		if old, ok := s.lookupLocked(name); ok {
+			session = old
+			s.sessions[name] = session
+			s.order = append(s.order, name)
+			s.persistedSeq[name] = 0
+		}
+	}
 	isNew := false
 	if session == nil {
 		session = &Session{
@@ -678,7 +856,7 @@ func (s *SessionStore) Trace(sessionID string) (*tracepkg.Trace, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	session, ok := s.sessions[sessionID]
+	session, ok := s.lookupLocked(sessionID)
 	if !ok {
 		return nil, false
 	}
@@ -693,7 +871,7 @@ func (s *SessionStore) SpanRows(sessionID string) ([]sessionSpanDTO, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	session, ok := s.sessions[sessionID]
+	session, ok := s.lookupLocked(sessionID)
 	if !ok {
 		return nil, false
 	}

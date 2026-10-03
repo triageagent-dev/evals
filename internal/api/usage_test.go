@@ -50,7 +50,7 @@ func TestUsageLedger_IngestFlushAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := NewSessionStoreWithArchive(nil, archive)
+	store := NewSessionStoreWithArchive(nil, archive, SessionLimits{})
 	now := time.Now().Add(-time.Hour).UnixMilli()
 
 	store.Ingest(llmSpanBody("aaaaaaaaaaaa0001", "llm1", now, 1000, 100, 1))
@@ -93,7 +93,7 @@ func TestUsageLedger_IngestFlushAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store2 := NewSessionStoreWithArchive(nil, archive2)
+	store2 := NewSessionStoreWithArchive(nil, archive2, SessionLimits{})
 	if err := store2.LoadPersisted(); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestUsageLedger_BackfillsArchiveWithoutLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored := NewSessionStoreWithArchive(nil, archive)
+	restored := NewSessionStoreWithArchive(nil, archive, SessionLimits{})
 	if err := restored.LoadPersisted(); err != nil {
 		t.Fatal(err)
 	}

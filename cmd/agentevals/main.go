@@ -9,7 +9,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/triageagent-dev/agentevals-go/internal/adk"
 	"github.com/triageagent-dev/agentevals-go/internal/api"
@@ -124,7 +126,7 @@ func usage() {
 
 Usage:
   agentevals run <trace-file>... --eval-set <path> -m <metric> [-m <metric>...] [flags]
-  agentevals serve [--addr :8001] [--otlp-addr :4318] [--otlp-grpc-addr :4317] [--health-addr :9090] [--session-db path] [--session-secret secret]
+  agentevals serve [--addr :8001] [--otlp-addr :4318] [--otlp-grpc-addr :4317] [--health-addr :9090] [--session-db path] [--session-memory n] [--session-retention 720h] [--session-secret secret]
                    [--admin-github-users user1,user2] [--default-role member]
   agentevals auth mint-token --name <label> [--ttl-days 3650] [--secret ...]
   agentevals mcp [--server-url http://localhost:8001] [--session-token ...]
@@ -429,6 +431,10 @@ func serveCmd(args []string) error {
 		"comma-separated GitHub logins idempotently granted the admin role at startup (see internal/api/roles.go); falls back to AGENTEVALS_ADMIN_GITHUB_USERS. Only takes effect when --session-secret is set. The only way to get a first admin into an otherwise-empty role store - after that, admins manage every role (including further admins) via GET/POST /api/admin/roles.")
 	defaultRole := fs.String("default-role", envOrDefault("AGENTEVALS_DEFAULT_ROLE", "member"),
 		"role (admin | member | viewer) granted to any authenticated user with no matching role binding; falls back to AGENTEVALS_DEFAULT_ROLE. \"member\" (the default) preserves this port's original fully-open, single-tier behavior for a deployment that never configures a role binding at all.")
+	sessionMemory := fs.Int("session-memory", envIntOrDefault("AGENTEVALS_SESSION_MEMORY", api.DefaultSessionMemory),
+		"completed sessions kept in memory with --session-db; older ones stay in the archive and load on demand (0 = no cap); falls back to AGENTEVALS_SESSION_MEMORY")
+	sessionRetention := fs.Duration("session-retention", envDurationOrDefault("AGENTEVALS_SESSION_RETENTION", api.DefaultSessionRetention),
+		"delete archived sessions not updated for this long, once a day, then compact the file (0 = keep forever); falls back to AGENTEVALS_SESSION_RETENTION")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -442,7 +448,26 @@ func serveCmd(args []string) error {
 			adminUsers = append(adminUsers, u)
 		}
 	}
-	return api.Serve(*addr, *otlpAddr, *otlpGRPCAddr, *healthAddr, *sessionDB, *sessionSecret, githubOAuth, adminUsers, *defaultRole)
+	return api.Serve(*addr, *otlpAddr, *otlpGRPCAddr, *healthAddr, *sessionDB, *sessionSecret, githubOAuth, adminUsers, *defaultRole,
+		api.SessionLimits{Memory: *sessionMemory, Retention: *sessionRetention})
+}
+
+// envIntOrDefault reads an integer env var, falling back to def when it is
+// unset or not a number.
+func envIntOrDefault(key string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(key)); err == nil {
+		return v
+	}
+	return def
+}
+
+// envDurationOrDefault reads a Go duration env var (e.g. "720h"), falling
+// back to def when it is unset or invalid.
+func envDurationOrDefault(key string, def time.Duration) time.Duration {
+	if v, err := time.ParseDuration(os.Getenv(key)); err == nil {
+		return v
+	}
+	return def
 }
 
 // envOrDefault returns os.Getenv(key) if set (even to an explicit
