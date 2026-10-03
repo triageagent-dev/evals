@@ -18,7 +18,7 @@ func llmSpanBody(traceID, spanID string, startMs int64, prompt, completion int, 
 	str := func(s string) map[string]any { return map[string]any{"stringValue": s} }
 	num := func(n int) map[string]any { return map[string]any{"intValue": strconvI(int64(n))} }
 	return map[string]any{"resourceSpans": []any{map[string]any{
-		"resource": map[string]any{"attributes": []any{attr("service.name", str("triage-core"))}},
+		"resource": map[string]any{"attributes": []any{attr("service.name", str("checkout-agent"))}},
 		"scopeSpans": []any{map[string]any{"scope": map[string]any{}, "spans": []any{
 			map[string]any{
 				"traceId": traceID, "spanId": "agent-" + spanID, "name": "agent.reflection",
@@ -34,7 +34,7 @@ func llmSpanBody(traceID, spanID string, startMs int64, prompt, completion int, 
 					attr("llm.model_name", str("gemini-2.5-flash")),
 					attr("llm.token_count.prompt", num(prompt)),
 					attr("llm.token_count.completion", num(completion)),
-					attr("tenant.id", str("otel-demo")),
+					attr("tenant.id", str("shop")),
 					attr("gen_ai.agent.name", str("reflection")),
 				},
 			},
@@ -67,7 +67,7 @@ func TestUsageLedger_IngestFlushAndQuery(t *testing.T) {
 	}
 	var calls, errs, in, out int64
 	for _, c := range cells {
-		if c.Kind != "reflection" || c.Tenant != "otel-demo" || c.Model != "gemini-2.5-flash" || c.Service != "triage-core" {
+		if c.Kind != "reflection" || c.Tenant != "shop" || c.Model != "gemini-2.5-flash" || c.Service != "checkout-agent" {
 			t.Errorf("unexpected cell dimensions: %+v", c)
 		}
 		calls += c.Calls

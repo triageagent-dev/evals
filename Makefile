@@ -33,13 +33,17 @@ clean:
 # ── release: ko image + Helm (charts/agentevals) ─────────────────────────
 # Deployment values live in deploy/values.yaml (gitignored; copy
 # deploy/values.example.yaml). Tags are <BASE_VERSION>.<commit count>-<sha>,
-# so every image names the commit it was built from.
+# so every image names the commit it was built from. This deployment's
+# registry and kube context go in deploy/local.mk (gitignored), e.g.
+#   KO_DOCKER_REPO = ghcr.io/your-org/agentevals
+#   KUBE_CONTEXT   = your-cluster-context
+-include deploy/local.mk
 BASE_VERSION  ?= 0.24
 VERSION       ?= $(BASE_VERSION).$(shell git rev-list --count HEAD)-$(shell git rev-parse --short HEAD)
-KO_DOCKER_REPO ?= ghcr.io/den-vasyliev/abox/agentevals
+KO_DOCKER_REPO ?= ghcr.io/your-org/agentevals
 # UI path prefix baked into the build ("/" = unprefixed, what the routes expect).
 UI_BASE_PATH  ?= /
-KUBE_CONTEXT  ?= gke_gfk-eco-preview-green_europe-west3_whale
+KUBE_CONTEXT  ?= $(shell kubectl config current-context)
 NAMESPACE     ?= agentevals
 RELEASE       ?= agentevals
 VALUES        ?= deploy/values.yaml

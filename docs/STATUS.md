@@ -175,7 +175,8 @@
   additive over Python. Every ingested LLM span that reports tokens (GenAI `gen_ai.usage.*` or OpenInference
   `llm.token_count.*`) becomes one row of an `llm_calls` ledger in the session SQLite file, keyed by span ID
   (`INSERT OR IGNORE`, so retried exports and restarts never double count; AGENT/CHAIN parents carry no row).
-  Rows record service, `triage.tenant`, `triage.llm.call_kind`, model, tokens, duration and span status
+  Rows record service, tenant (the `--usage-tenant-attr` attribute), call kind (`gen_ai.agent.name`, else the
+  trace root span name), model, tokens, duration and span status
   (`otel.status_code`, which the OTLP converter now keeps - Python's `_parse_span` drops it). On startup the
   ledger is backfilled from the archived sessions; rows older than 90 days are pruned daily.
   `GET /api/usage?hours=N` returns (bucket, service, tenant, kind, model) cells, hourly up to four days and daily

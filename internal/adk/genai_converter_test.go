@@ -148,11 +148,11 @@ func TestConvertTrace_OpenInferenceMultiTurn(t *testing.T) {
 	}
 }
 
-// buildTriageCoreAgentTrace reproduces triage-core's OpenInference shape for
-// a reflection/RCA pass: an AGENT root span carrying the clean prompt and
+// buildOpenInferenceAgentTrace reproduces an OpenInference producer's shape
+// for an agent pass: an AGENT root span carrying the clean prompt and
 // answer, and an llm.chat.completions child that has only OpenInference
 // markers (Vertex path: no gen_ai.*, no input/output values).
-func buildTriageCoreAgentTrace() *tracepkg.Trace {
+func buildOpenInferenceAgentTrace() *tracepkg.Trace {
 	root := &tracepkg.Span{
 		TraceID: "trace-c", SpanID: "agent", OperationName: "agent.reflection",
 		StartTime: 0, Duration: 3_000_000,
@@ -177,7 +177,7 @@ func buildTriageCoreAgentTrace() *tracepkg.Trace {
 }
 
 func TestConvertTrace_OpenInferenceAgentWithBareLLMChild(t *testing.T) {
-	tr := buildTriageCoreAgentTrace()
+	tr := buildOpenInferenceAgentTrace()
 	if !adk.DetectGenAIFormat(tr) {
 		t.Fatal("expected DetectGenAIFormat to fire on openinference.span.kind=LLM / llm.model_name")
 	}

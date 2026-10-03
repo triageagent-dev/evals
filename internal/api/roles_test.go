@@ -60,11 +60,11 @@ func TestRoleStore_DirectUserBindingOutranksTeamBinding(t *testing.T) {
 	if _, err := s.Upsert(RoleBinding{SubjectType: "team", Subject: "acme/eng", Role: RoleViewer}); err != nil {
 		t.Fatalf("Upsert(team): %v", err)
 	}
-	if _, err := s.Upsert(RoleBinding{SubjectType: "user", Subject: "denvasyliev", Role: RoleAdmin}); err != nil {
+	if _, err := s.Upsert(RoleBinding{SubjectType: "user", Subject: "alice", Role: RoleAdmin}); err != nil {
 		t.Fatalf("Upsert(user): %v", err)
 	}
 
-	info := s.EffectiveRole("denvasyliev", []string{"acme/eng"})
+	info := s.EffectiveRole("alice", []string{"acme/eng"})
 	if !info.IsAdmin {
 		t.Fatalf("EffectiveRole() = %+v, want IsAdmin (direct admin binding must outrank the viewer team binding)", info)
 	}
