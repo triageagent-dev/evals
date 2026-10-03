@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Modal } from 'antd';
 import { SpansPanel } from './SpansPanel';
 import { LiveConversationPanel } from './LiveConversationPanel';
 import type { ConversationElement } from './LiveConversationPanel';
@@ -467,7 +468,13 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                onRemove();
+                Modal.confirm({
+                  title: 'Remove this session?',
+                  content: 'It is hidden from this view only. The stored session is not deleted and comes back after a reload.',
+                  okText: 'Remove',
+                  okType: 'danger',
+                  onOk: onRemove,
+                });
               }}
               title="Remove session"
               style={{
