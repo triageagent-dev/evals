@@ -83,7 +83,7 @@ export const Sidebar: React.FC = () => {
             onClick={() => actions.setCurrentView('usage')}
           >
             <Coins size={18} />
-            Token Usage
+            Usage
           </button>
 
           <button

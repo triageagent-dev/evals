@@ -198,7 +198,7 @@ export const UsageView: React.FC = () => {
     <div css={pageStyle}>
       <header css={headerStyle}>
         <div>
-          <h1 css={titleStyle}>Token Usage</h1>
+          <h1 css={titleStyle}>Usage</h1>
           <p css={subtitleStyle}>
             Tokens reported by LLM spans in ingested traces. Cost is estimated from public list prices, not billed spend.
           </p>
