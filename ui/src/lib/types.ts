@@ -682,6 +682,23 @@ export interface UsageSeries {
   buckets: UsageBucket[];
 }
 
+// One row of GET /api/usage/calls?group=session: a session's calls on one
+// model, summed.
+export interface UsageSession {
+  sessionId: string;
+  start: number;
+  end: number;
+  calls: number;
+  errors: number;
+  kinds: string;
+  tenants: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  peakTokens: number;
+  durationMs: number;
+}
+
 export interface UsageCall {
   spanId: string;
   traceId: string;

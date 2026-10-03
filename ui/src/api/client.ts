@@ -12,6 +12,7 @@ import type {
   EvalSetSummary,
   UsageSeries,
   UsageCall,
+  UsageSession,
 } from '../lib/types';
 import { config } from '../config';
 import { evalSetFromWireFormat, evalSetToWireFormat } from '../lib/evalset-builder';
@@ -409,6 +410,13 @@ export async function getUsage(hours: number): Promise<UsageSeries> {
   if (response.status === 503) throw new StorageUnavailableError();
   if (!response.ok) throw new Error(`Failed to load usage: ${httpStatusLabel(response)}`);
   return unwrap<UsageSeries>(response);
+}
+
+export async function getUsageSessions(hours: number, limit = 25): Promise<UsageSession[]> {
+  const response = await fetch(`${config.api.endpoints.usage}/calls?hours=${hours}&limit=${limit}&group=session`);
+  if (response.status === 503) throw new StorageUnavailableError();
+  if (!response.ok) throw new Error(`Failed to load top sessions: ${httpStatusLabel(response)}`);
+  return unwrap<UsageSession[]>(response);
 }
 
 export async function getUsageCalls(hours: number, limit = 25): Promise<UsageCall[]> {

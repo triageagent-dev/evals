@@ -224,3 +224,37 @@ func TestUsageLedger_KindFallsBackToTraceRoot(t *testing.T) {
 		t.Errorf("cells = %+v, want one cell of kind voice.session and no tenant", cells)
 	}
 }
+
+// Many turns of one session rank as one row, ahead of a single larger call.
+func TestUsageLedger_TopSessionsGroupsTurns(t *testing.T) {
+	archive, err := NewSQLiteStore(filepath.Join(t.TempDir(), "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	start := time.Now().Add(-time.Hour).UnixMilli()
+	var rows []usageRow
+	for i := 0; i < 10; i++ {
+		rows = append(rows, usageRow{SpanID: "turn" + strconvI(int64(i)), TraceID: "t1", SessionID: "voice", StartMs: start + int64(i),
+			Kind: "voice.session", Model: "live", InputTokens: int64(1000 * (i + 1)), OutputTokens: 10})
+	}
+	rows = append(rows, usageRow{SpanID: "big", TraceID: "t2", SessionID: "rca", StartMs: start, Kind: "rca", Model: "flash",
+		InputTokens: 20000, OutputTokens: 500})
+	if err := archive.InsertUsage(rows); err != nil {
+		t.Fatal(err)
+	}
+	got, err := archive.TopUsageSessions(time.Now().Add(-24*time.Hour), time.Now(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2: %+v", len(got), got)
+	}
+	v := got[0]
+	if v.SessionID != "voice" || v.Calls != 10 || v.InputTokens != 55000 || v.PeakTokens != 10010 || v.Kinds != "voice.session" {
+		t.Errorf("first row = %+v, want the voice session: 10 calls, 55000 in, peak 10010", v)
+	}
+	if got[1].SessionID != "rca" || got[1].Calls != 1 {
+		t.Errorf("second row = %+v, want the single rca call", got[1])
+	}
+}

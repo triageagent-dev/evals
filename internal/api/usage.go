@@ -71,6 +71,7 @@ func usageHandler(store *SQLiteStore) http.HandlerFunc {
 
 // usageCallsHandler implements GET /api/usage/calls: the most expensive
 // calls in the window, by total tokens (limit, default 50, at most 500).
+// With group=session it ranks sessions instead (TopUsageSessions).
 func usageCallsHandler(store *SQLiteStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if store == nil {
@@ -85,6 +86,15 @@ func usageCallsHandler(store *SQLiteStore) http.HandlerFunc {
 		limit := 50
 		if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
 			limit = min(v, 500)
+		}
+		if r.URL.Query().Get("group") == "session" {
+			sessions, err := store.TopUsageSessions(from, to, limit)
+			if err != nil {
+				writeEvaluateError(w, http.StatusInternalServerError, "failed to read usage sessions: "+err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"data": sessions, "error": nil})
+			return
 		}
 		calls, err := store.TopUsageCalls(from, to, limit)
 		if err != nil {

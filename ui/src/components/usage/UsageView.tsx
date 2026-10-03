@@ -10,14 +10,14 @@ import {
   Legend,
 } from 'chart.js';
 import { RefreshCw } from 'lucide-react';
-import { getUsage, getUsageCalls, StorageUnavailableError } from '../../api/client';
+import { getUsage, getUsageSessions, StorageUnavailableError } from '../../api/client';
 import { estimateCostUsd, formatCostUsd } from '../../lib/pricing';
-import type { UsageBucket, UsageCall, UsageSeries } from '../../lib/types';
+import type { UsageBucket, UsageSeries, UsageSession } from '../../lib/types';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
 
 // Token Usage view - additive over Python (agentevals has no usage view).
-// Reads the LLM call ledger (GET /api/usage, /api/usage/calls).
+// Reads the LLM call ledger (GET /api/usage, /api/usage/calls?group=session).
 
 type Dimension = 'kind' | 'tenant' | 'model' | 'service';
 
@@ -100,16 +100,16 @@ export const UsageView: React.FC = () => {
   const [hours, setHours] = useState(24 * 7);
   const [dim, setDim] = useState<Dimension>('kind');
   const [series, setSeries] = useState<UsageSeries | null>(null);
-  const [calls, setCalls] = useState<UsageCall[]>([]);
+  const [sessions, setSessions] = useState<UsageSession[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, c] = await Promise.all([getUsage(hours), getUsageCalls(hours, 25)]);
+      const [s, c] = await Promise.all([getUsage(hours), getUsageSessions(hours, 25)]);
       setSeries(s);
-      setCalls(c);
+      setSessions(c);
       setError(null);
     } catch (err) {
       setError(
@@ -332,39 +332,41 @@ export const UsageView: React.FC = () => {
           </section>
 
           <section css={cardStyle}>
-            <h2 css={cardTitleStyle}>Largest calls by tokens</h2>
-            {calls.length === 0 ? (
+            <h2 css={cardTitleStyle}>Largest sessions by tokens</h2>
+            {sessions.length === 0 ? (
               <p css={emptyStyle}>No calls in this window.</p>
             ) : (
               <div css={tableWrapStyle}>
                 <table css={tableStyle}>
                   <thead>
                     <tr>
-                      <th>Time</th>
+                      <th>Last call</th>
                       <th>Kind</th>
                       <th>Tenant</th>
                       <th>Model</th>
+                      <th css={numStyle}>Calls</th>
                       <th css={numStyle}>Input</th>
                       <th css={numStyle}>Output</th>
+                      <th css={numStyle}>Largest call</th>
                       <th css={numStyle}>Est. cost</th>
-                      <th css={numStyle}>Latency</th>
                       <th>Session</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {calls.map(c => {
-                      const cost = estimateCostUsd(c.model, c.inputTokens, c.outputTokens);
+                    {sessions.map(r => {
+                      const cost = estimateCostUsd(r.model, r.inputTokens, r.outputTokens);
                       return (
-                        <tr key={c.spanId}>
-                          <td css={monoStyle}>{new Date(c.start).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}</td>
-                          <td>{c.kind || NONE}{c.isError && <span css={failTagStyle}>failed</span>}</td>
-                          <td>{c.tenant || NONE}</td>
-                          <td css={monoStyle}>{c.model}</td>
-                          <td css={numStyle}>{formatTokens(c.inputTokens)}</td>
-                          <td css={numStyle}>{formatTokens(c.outputTokens)}</td>
+                        <tr key={`${r.sessionId}|${r.model}`}>
+                          <td css={monoStyle}>{new Date(r.end).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}</td>
+                          <td>{r.kinds || NONE}{r.errors > 0 && <span css={failTagStyle}>{r.errors} failed</span>}</td>
+                          <td>{r.tenants || NONE}</td>
+                          <td css={monoStyle}>{r.model}</td>
+                          <td css={numStyle}>{r.calls.toLocaleString()}</td>
+                          <td css={numStyle}>{formatTokens(r.inputTokens)}</td>
+                          <td css={numStyle}>{formatTokens(r.outputTokens)}</td>
+                          <td css={numStyle}>{formatTokens(r.peakTokens)}</td>
                           <td css={numStyle}>{cost == null ? '–' : formatCostUsd(cost)}</td>
-                          <td css={numStyle}>{formatMs(c.durationMs)}</td>
-                          <td css={monoStyle} title={c.sessionId}>{c.sessionId}</td>
+                          <td css={monoStyle} title={r.sessionId}>{r.sessionId}</td>
                         </tr>
                       );
                     })}

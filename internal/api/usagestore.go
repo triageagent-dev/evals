@@ -232,6 +232,51 @@ type usageCallDTO struct {
 	IsError      bool   `json:"isError"`
 }
 
+// usageSessionDTO is one row of GET /api/usage/calls?group=session: every
+// call of one session on one model, summed. A long multi-turn session
+// re-reads its context each turn, so its calls are many and alike; ranking
+// sessions keeps one of them from filling the whole list. Rows are per
+// model, not per session, so the UI can still price each row.
+type usageSessionDTO struct {
+	SessionID    string `json:"sessionId"`
+	Start        int64  `json:"start"`
+	End          int64  `json:"end"`
+	Calls        int64  `json:"calls"`
+	Errors       int64  `json:"errors"`
+	Kinds        string `json:"kinds"`
+	Tenants      string `json:"tenants"`
+	Model        string `json:"model"`
+	InputTokens  int64  `json:"inputTokens"`
+	OutputTokens int64  `json:"outputTokens"`
+	PeakTokens   int64  `json:"peakTokens"`
+	DurationMs   int64  `json:"durationMs"`
+}
+
+// TopUsageSessions returns the sessions (per model) that used the most
+// tokens in [from, to).
+func (s *SQLiteStore) TopUsageSessions(from, to time.Time, limit int) ([]usageSessionDTO, error) {
+	rows, err := s.db.Query(`SELECT session_id, MIN(start_ms), MAX(start_ms), COUNT(*), SUM(is_error),
+			COALESCE(GROUP_CONCAT(DISTINCT NULLIF(kind, '')), ''), COALESCE(GROUP_CONCAT(DISTINCT NULLIF(tenant, '')), ''),
+			model, SUM(input_tokens), SUM(output_tokens), MAX(input_tokens + output_tokens), SUM(duration_ms)
+		FROM llm_calls WHERE start_ms >= ? AND start_ms < ?
+		GROUP BY session_id, model
+		ORDER BY SUM(input_tokens + output_tokens) DESC LIMIT ?`, from.UnixMilli(), to.UnixMilli(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []usageSessionDTO{}
+	for rows.Next() {
+		var r usageSessionDTO
+		if err := rows.Scan(&r.SessionID, &r.Start, &r.End, &r.Calls, &r.Errors, &r.Kinds, &r.Tenants,
+			&r.Model, &r.InputTokens, &r.OutputTokens, &r.PeakTokens, &r.DurationMs); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // TopUsageCalls returns the calls in [from, to) with the most total tokens.
 func (s *SQLiteStore) TopUsageCalls(from, to time.Time, limit int) ([]usageCallDTO, error) {
 	rows, err := s.db.Query(`SELECT span_id, trace_id, session_id, start_ms, duration_ms, service, tenant, kind, model,
