@@ -122,6 +122,7 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
         borderRadius: '12px',
         border: isSelected ? '2px solid #7C3AED' : '1px solid var(--border)',
         padding: '20px',
+        minWidth: 0,
         transition: 'all 0.2s',
         boxShadow: isSelected ? '0 4px 12px rgba(124, 58, 237, 0.15)' : 'none',
       }}

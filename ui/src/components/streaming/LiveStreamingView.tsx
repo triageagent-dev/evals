@@ -1022,7 +1022,7 @@ export function LiveStreamingView() {
               }}>
                 Active Sessions ({activeLiveSessions.length})
               </h2>
-              <div style={{ display: 'grid', gap: '16px', marginBottom: '32px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '16px', marginBottom: '32px' }}>
                 {activeLiveSessions.map(session => (
                   <SessionCard
                     key={session.sessionId}
@@ -1054,7 +1054,7 @@ export function LiveStreamingView() {
               }}>
                 Completed Sessions ({completedSessions.length})
               </h2>
-              <div style={{ display: 'grid', gap: '16px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '16px' }}>
                 {completedSessions.map(session => (
                   <SessionCard
                     key={session.sessionId}
