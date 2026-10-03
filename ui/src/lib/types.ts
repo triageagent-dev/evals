@@ -569,9 +569,11 @@ export interface LiveSession {
   startedAt: string;
   completedAt?: string | null;
   // Additive over Python: the trace's root span and how many LLM calls it
-  // made, known once the session is complete.
+  // made, known once the session is complete; errors counts its spans with
+  // status ERROR.
   rootSpanName?: string;
   llmCalls?: number;
+  errors?: number;
 }
 
 // Inspector-specific types

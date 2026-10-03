@@ -30,6 +30,7 @@ export const config = {
       validateEvalSet: `${API_BASE_URL}/api/validate/eval-set`,
       streamingCreateEvalSet: `${API_BASE_URL}/api/streaming/create-eval-set`,
       streamingGetTrace: `${API_BASE_URL}/api/streaming/get-trace`,
+      streamingSessionSpans: `${API_BASE_URL}/api/streaming/session-spans`,
       streamingSessions: `${API_BASE_URL}/api/streaming/sessions`,
       uiUpdatesStream: `${API_BASE_URL}/stream/ui-updates`,
       debugBundle: `${API_BASE_URL}/api/debug/bundle`,

@@ -66,8 +66,29 @@ func parseSpan(spanData map[string]any, resourceAttrs map[string]any, scopeName,
 	// Additive over Python: _parse_span drops the span status. It is kept as
 	// otel.status_code (the tag name Jaeger and the OTel Jaeger exporter use)
 	// so the usage view can count failed LLM calls.
-	if code := spanStatusCode(asMap(spanData["status"])); code != "" {
+	status := asMap(spanData["status"])
+	if code := spanStatusCode(status); code != "" {
 		attrs[otelStatusCode] = code
+	}
+	// Also additive: the status message and the first "exception" event's
+	// attributes (exception.type/message/stacktrace), so the UI can show why
+	// a span failed. An explicit span attribute of the same name wins.
+	if msg, _ := status["message"].(string); msg != "" {
+		if _, ok := attrs[otelStatusDescription]; !ok {
+			attrs[otelStatusDescription] = msg
+		}
+	}
+	for _, ev := range asSlice(spanData["events"]) {
+		event := asMap(ev)
+		if name, _ := event["name"].(string); name != "exception" {
+			continue
+		}
+		for k, v := range decodeAttributes(asSlice(event["attributes"])) {
+			if _, ok := attrs[k]; !ok {
+				attrs[k] = v
+			}
+		}
+		break
 	}
 
 	startNs := decodeIntValue(spanData["startTimeUnixNano"])
@@ -91,7 +112,10 @@ func parseSpan(spanData map[string]any, resourceAttrs map[string]any, scopeName,
 	}
 }
 
-const otelStatusCode = "otel.status_code"
+const (
+	otelStatusCode        = "otel.status_code"
+	otelStatusDescription = "otel.status_description"
+)
 
 // spanStatusCode maps an OTLP status to "OK" or "ERROR" ("" for unset). The
 // OTLP/HTTP JSON encoding sends the code as an integer (1 OK, 2 ERROR);

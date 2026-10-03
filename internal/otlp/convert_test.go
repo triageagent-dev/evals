@@ -155,3 +155,46 @@ func TestParseExportRequest_ParentChildLinking(t *testing.T) {
 		t.Fatalf("root's children = %v, want [child]", tr.RootSpans[0].Children)
 	}
 }
+
+func TestParseExportRequest_KeepsStatusMessageAndException(t *testing.T) {
+	body := map[string]any{
+		"resourceSpans": []any{
+			map[string]any{
+				"resource": map[string]any{},
+				"scopeSpans": []any{
+					map[string]any{
+						"scope": map[string]any{},
+						"spans": []any{
+							map[string]any{
+								"traceId": "aaaa", "spanId": "root", "name": "llm",
+								"startTimeUnixNano": "1000", "endTimeUnixNano": "2000",
+								"status": map[string]any{"code": float64(2), "message": "quota exceeded"},
+								"events": []any{
+									map[string]any{"name": "log", "attributes": []any{
+										map[string]any{"key": "exception.type", "value": map[string]any{"stringValue": "not-an-exception"}},
+									}},
+									map[string]any{"name": "exception", "attributes": []any{
+										map[string]any{"key": "exception.type", "value": map[string]any{"stringValue": "ResourceExhausted"}},
+										map[string]any{"key": "exception.message", "value": map[string]any{"stringValue": "429"}},
+									}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tags := ParseExportRequest(body)[0].AllSpans[0].Tags
+	for k, want := range map[string]string{
+		"otel.status_code":        "ERROR",
+		"otel.status_description": "quota exceeded",
+		"exception.type":          "ResourceExhausted",
+		"exception.message":       "429",
+	} {
+		if got := tags[k]; got != want {
+			t.Errorf("%s = %v, want %q", k, got, want)
+		}
+	}
+}

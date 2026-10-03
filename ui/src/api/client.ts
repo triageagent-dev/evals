@@ -417,3 +417,23 @@ export async function getUsageCalls(hours: number, limit = 25): Promise<UsageCal
   if (!response.ok) throw new Error(`Failed to load top calls: ${httpStatusLabel(response)}`);
   return unwrap<UsageCall[]>(response);
 }
+
+// AGENTEVALS-GO FORK: one row of GET /api/streaming/session-spans - a span
+// with all its attributes (status/exception fields included) and its depth
+// in the trace tree.
+export interface SessionSpan {
+  span_id: string;
+  parent_span_id?: string;
+  operation_name: string;
+  start_time: number; // microseconds since epoch
+  duration: number; // microseconds
+  depth: number;
+  tags: Record<string, unknown>;
+}
+
+export async function getSessionSpans(sessionId: string): Promise<SessionSpan[]> {
+  const response = await fetch(`${config.api.endpoints.streamingSessionSpans}?session_id=${encodeURIComponent(sessionId)}`);
+  if (!response.ok) throw new Error(`Failed to load spans: ${httpStatusLabel(response)}`);
+  const data = await unwrap<{ sessionId: string; spans: SessionSpan[] }>(response);
+  return data.spans;
+}

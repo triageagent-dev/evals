@@ -82,6 +82,8 @@ type SessionSummary struct {
 	// request or event-processing trace) and hide such sessions by default.
 	RootSpanName string `json:"rootSpanName,omitempty"`
 	LLMCalls     int    `json:"llmCalls"`
+	// Errors counts spans whose status is ERROR (otel.status_code).
+	Errors int `json:"errors"`
 }
 
 func summarize(s *Session) SessionSummary {
@@ -102,10 +104,11 @@ func summarize(s *Session) SessionSummary {
 	if s.IsComplete && len(s.Invocations) > 0 {
 		invocations = s.Invocations
 	}
-	rootName, llmCalls := spanOutline(s.Spans)
+	rootName, llmCalls, errs := spanOutline(s.Spans)
 	return SessionSummary{
 		RootSpanName: rootName,
 		LLMCalls:     llmCalls,
+		Errors:       errs,
 		SessionID:    s.ID,
 		TraceID:      s.PrimaryTraceID,
 		EvalSetID:    evalSetID,
@@ -118,19 +121,22 @@ func summarize(s *Session) SessionSummary {
 	}
 }
 
-// spanOutline returns the earliest root span's name and the number of LLM
-// call spans in spans.
-func spanOutline(spans []*tracepkg.Span) (rootName string, llmCalls int) {
+// spanOutline returns the earliest root span's name, the number of LLM
+// call spans and the number of spans with status ERROR in spans.
+func spanOutline(spans []*tracepkg.Span) (rootName string, llmCalls, errs int) {
 	var rootStart int64
 	for _, sp := range spans {
 		if adk.IsLLMSpan(sp) {
 			llmCalls++
 		}
+		if sp.TagString("otel.status_code") == "ERROR" {
+			errs++
+		}
 		if sp.ParentSpanID == "" && (rootName == "" || sp.StartTime < rootStart) {
 			rootName, rootStart = sp.OperationName, sp.StartTime
 		}
 	}
-	return rootName, llmCalls
+	return rootName, llmCalls, errs
 }
 
 // sessionStartedEvent / spanReceivedEvent mirror WSSessionStartedEvent /
@@ -161,6 +167,7 @@ type sessionCompleteEvent struct {
 	// Additive over Python, as on SessionSummary.
 	RootSpanName string `json:"rootSpanName,omitempty"`
 	LLMCalls     int    `json:"llmCalls"`
+	Errors       int    `json:"errors"`
 }
 
 // SessionStore holds every session ingested since process start, in memory,
@@ -627,7 +634,7 @@ func (s *SessionStore) completeSession(sessionID string) {
 
 	completedAt := now.Format(time.RFC3339)
 	invocations := session.Invocations
-	rootName, llmCalls := spanOutline(session.Spans)
+	rootName, llmCalls, errs := spanOutline(session.Spans)
 	hub := s.hub
 	s.mu.Unlock()
 
@@ -639,6 +646,7 @@ func (s *SessionStore) completeSession(sessionID string) {
 			CompletedAt:  &completedAt,
 			RootSpanName: rootName,
 			LLMCalls:     llmCalls,
+			Errors:       errs,
 		})
 	}
 }
@@ -675,6 +683,41 @@ func (s *SessionStore) Trace(sessionID string) (*tracepkg.Trace, bool) {
 		return nil, false
 	}
 	return otlp.BuildTrace(sessionID, session.Spans), true
+}
+
+// SpanRows returns a session's spans depth-first, children by start time
+// (BuildTrace already sorts them), for GET /api/streaming/session-spans.
+// The walk runs under s.mu: BuildTrace rewires Children on the shared span
+// pointers, so walking after unlocking could race with a span arriving.
+func (s *SessionStore) SpanRows(sessionID string) ([]sessionSpanDTO, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[sessionID]
+	if !ok {
+		return nil, false
+	}
+	tr := otlp.BuildTrace(sessionID, session.Spans)
+	out := make([]sessionSpanDTO, 0, len(tr.AllSpans))
+	var walk func(sp *tracepkg.Span, depth int)
+	walk = func(sp *tracepkg.Span, depth int) {
+		out = append(out, sessionSpanDTO{
+			SpanID:        sp.SpanID,
+			ParentSpanID:  sp.ParentSpanID,
+			OperationName: sp.OperationName,
+			StartTime:     sp.StartTime,
+			Duration:      sp.Duration,
+			Depth:         depth,
+			Tags:          sp.Tags,
+		})
+		for _, c := range sp.Children {
+			walk(c, depth+1)
+		}
+	}
+	for _, root := range tr.RootSpans {
+		walk(root, 0)
+	}
+	return out, true
 }
 
 // nonAgentevalsAttrs returns resourceAttrs minus any agentevals.*-prefixed

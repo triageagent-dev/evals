@@ -158,6 +158,7 @@ export function LiveStreamingView() {
           invocations?: StreamingInvocation[];
           rootSpanName?: string;
           llmCalls?: number;
+          errors?: number;
         }> = envelope.data;
         if (!mountedRef.current) return;
 
@@ -181,6 +182,7 @@ export function LiveStreamingView() {
               completedAt: s.completedAt,
               rootSpanName: s.rootSpanName,
               llmCalls: s.llmCalls,
+              errors: s.errors,
             });
           }
           return newMap;
@@ -433,6 +435,7 @@ export function LiveStreamingView() {
                   completedAt: data.completedAt,
                   rootSpanName: data.rootSpanName,
                   llmCalls: data.llmCalls,
+                  errors: data.errors,
                 });
               } else {
                 newMap.set(data.sessionId, {
@@ -445,6 +448,7 @@ export function LiveStreamingView() {
                   completedAt: data.completedAt,
                   rootSpanName: data.rootSpanName,
                   llmCalls: data.llmCalls,
+                  errors: data.errors,
                 });
               }
 

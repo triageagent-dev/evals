@@ -131,6 +131,7 @@ func Serve(addr, otlpAddr, otlpGRPCAddr, healthAddr, sessionDBPath, sessionSecre
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/streaming/sessions", sessionsHandler(store))
 	mux.HandleFunc("/api/streaming/get-trace", getTraceHandler(store))
+	mux.HandleFunc("/api/streaming/session-spans", sessionSpansHandler(store))
 	mux.HandleFunc("/api/streaming/create-eval-set", createEvalSetHandler(store))
 	mux.HandleFunc("/stream/ui-updates", uiUpdatesHandler(hub))
 	mux.HandleFunc("/ws/ui-updates", wsUpdatesHandler(hub))
@@ -413,6 +414,39 @@ func getTraceHandler(store *SessionStore) http.HandlerFunc {
 			},
 			"error": nil,
 		})
+	}
+}
+
+// sessionSpanDTO is one row of GET /api/streaming/session-spans: a span
+// with every attribute (status and exception fields included, see
+// otlp.parseSpan) and its depth in the trace tree, so the UI can draw an
+// indented list without rebuilding the tree. Additive over Python.
+type sessionSpanDTO struct {
+	SpanID        string         `json:"span_id"`
+	ParentSpanID  string         `json:"parent_span_id,omitempty"`
+	OperationName string         `json:"operation_name"`
+	StartTime     int64          `json:"start_time"`
+	Duration      int64          `json:"duration"`
+	Depth         int            `json:"depth"`
+	Tags          map[string]any `json:"tags"`
+}
+
+// sessionSpansHandler implements GET /api/streaming/session-spans?session_id=:
+// the session's spans in depth-first order (children by start time), each
+// with its attributes. Additive over Python.
+func sessionSpansHandler(store *SessionStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		id := r.URL.Query().Get("session_id")
+		out, ok := store.SpanRows(id)
+		if !ok {
+			writeEvaluateError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"sessionId": id, "spans": out}, "error": nil})
 	}
 }
 

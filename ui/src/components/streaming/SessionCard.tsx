@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { SpansPanel } from './SpansPanel';
 import { LiveConversationPanel } from './LiveConversationPanel';
 import type { ConversationElement } from './LiveConversationPanel';
 import { SessionMetadata } from './SessionMetadata';
@@ -44,6 +45,7 @@ interface SessionCardProps {
     completedAt?: string | null;
     rootSpanName?: string;
     llmCalls?: number;
+    errors?: number;
   };
   isSelected: boolean;
   onSelect: () => void;
@@ -253,6 +255,11 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
                 {session.llmCalls === 0
                   ? 'no LLM call'
                   : `${session.llmCalls} LLM call${session.llmCalls === 1 ? '' : 's'}`}
+              </span>
+            )}
+            {(session.errors ?? 0) > 0 && (
+              <span style={{ marginLeft: '10px', color: '#ef4444', fontWeight: 600 }}>
+                {session.errors} error{session.errors === 1 ? '' : 's'}
               </span>
             )}
           </p>
@@ -673,6 +680,7 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
         </details>
       )}
 
+      {expanded && <SpansPanel sessionId={session.sessionId} />}
     </div>
   );
 }

@@ -182,6 +182,15 @@
   beyond; `GET /api/usage/calls` lists the largest calls. The UI view shows totals, estimated cost
   (`lib/pricing.ts`), tokens over time stacked by kind/tenant/model/service, a breakdown table and the largest
   calls. Needs `--session-db`; returns 503 without it.
+- **Span attributes and errors** (`internal/api/server.go`'s `sessionSpansHandler`, `SessionStore.SpanRows`,
+  `ui/src/components/streaming/SpansPanel.tsx`) - additive over Python. The OTLP converter also keeps the span
+  status message as `otel.status_description` and the first `exception` event's attributes
+  (`exception.type`/`message`/`stacktrace`); an explicit span attribute of the same name wins.
+  `GET /api/streaming/session-spans?session_id=` returns the session's spans depth-first with their depth and
+  every attribute; session summaries and `session_complete` carry `errors` (spans with status ERROR). The
+  session card shows the error count and a Spans section (indented tree, ERROR marks, error fields first,
+  long values expandable). User and agent messages collapse one by one and render line breaks, light
+  Markdown and JSON (`PrettyText.tsx`).
 - **MCP server** (`cmd/agentevals/mcp.go`, `agentevals mcp`) - a stdio Model Context Protocol server (via
   [`github.com/mark3labs/mcp-go`](https://pkg.go.dev/github.com/mark3labs/mcp-go)), ported from
   `mcp_server.py`'s `create_server`: `list_metrics`, `evaluate_traces` (fully offline - loads trace files
