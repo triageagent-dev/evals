@@ -168,7 +168,7 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
               <span style={{
                 fontSize: '11px',
                 fontWeight: 600,
-                color: 'var(--text-tertiary)',
+                color: 'var(--text-primary)',
                 background: 'var(--bg-primary)',
                 padding: '4px 10px',
                 borderRadius: '6px',
@@ -194,7 +194,7 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
               <span title="Span window: earliest span start to latest span end" style={{
                 fontSize: '11px',
                 fontWeight: 600,
-                color: 'var(--text-tertiary)',
+                color: 'var(--text-primary)',
                 background: 'var(--bg-primary)',
                 padding: '4px 10px',
                 borderRadius: '6px',
@@ -208,7 +208,7 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
               <span style={{
                 fontSize: '11px',
                 fontWeight: 600,
-                color: 'var(--text-tertiary)',
+                color: 'var(--text-primary)',
                 background: 'var(--bg-primary)',
                 padding: '4px 10px',
                 borderRadius: '6px',
