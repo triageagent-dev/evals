@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// llmSpanBody is one OTLP/HTTP JSON export with a triage-core style LLM span
-// (OpenInference token counts, tenant and call kind) under an AGENT parent
+// llmSpanBody is one OTLP/HTTP JSON export with an LLM span
+// (OpenInference token counts, a tenant and gen_ai.agent.name) under an AGENT parent
 // that repeats no counts.
 func llmSpanBody(traceID, spanID string, startMs int64, prompt, completion int, statusCode int) map[string]any {
 	ns := func(ms int64) string { return strconvI(ms * 1_000_000) }
@@ -34,8 +34,8 @@ func llmSpanBody(traceID, spanID string, startMs int64, prompt, completion int, 
 					attr("llm.model_name", str("gemini-2.5-flash")),
 					attr("llm.token_count.prompt", num(prompt)),
 					attr("llm.token_count.completion", num(completion)),
-					attr("triage.tenant", str("otel-demo")),
-					attr("triage.llm.call_kind", str("reflection")),
+					attr("tenant.id", str("otel-demo")),
+					attr("gen_ai.agent.name", str("reflection")),
 				},
 			},
 		}}},
@@ -50,7 +50,7 @@ func TestUsageLedger_IngestFlushAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := NewSessionStoreWithArchive(nil, archive, SessionLimits{})
+	store := NewSessionStoreWithArchive(nil, archive, SessionLimits{UsageTenantAttr: "tenant.id"})
 	now := time.Now().Add(-time.Hour).UnixMilli()
 
 	store.Ingest(llmSpanBody("aaaaaaaaaaaa0001", "llm1", now, 1000, 100, 1))
@@ -171,5 +171,56 @@ func TestSummarize_RootSpanAndLLMCalls(t *testing.T) {
 	}
 	if got[0].RootSpanName != "agent.reflection" || got[0].LLMCalls != 1 {
 		t.Errorf("root=%q llmCalls=%d, want agent.reflection / 1", got[0].RootSpanName, got[0].LLMCalls)
+	}
+}
+
+// A span without gen_ai.agent.name takes its trace root's name, even when
+// the root ends (and is exported) after the LLM spans, as a voice session's
+// root does.
+func TestUsageLedger_KindFallsBackToTraceRoot(t *testing.T) {
+	archive, err := NewSQLiteStore(filepath.Join(t.TempDir(), "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewSessionStoreWithArchive(nil, archive, SessionLimits{})
+	defer store.Close()
+	start := time.Now().Add(-time.Hour).UnixMilli()
+	ns := func(ms int64) string { return strconvI(ms * 1_000_000) }
+	attr := func(k string, v map[string]any) map[string]any { return map[string]any{"key": k, "value": v} }
+	export := func(span map[string]any) map[string]any {
+		return map[string]any{"resourceSpans": []any{map[string]any{
+			"resource":   map[string]any{"attributes": []any{attr("service.name", map[string]any{"stringValue": "voice"})}},
+			"scopeSpans": []any{map[string]any{"scope": map[string]any{}, "spans": []any{span}}},
+		}}}
+	}
+	const traceID = "bbbbbbbbbbbb0001"
+
+	store.Ingest(export(map[string]any{
+		"traceId": traceID, "spanId": "llm1", "parentSpanId": "root1", "name": "llm.gemini_realtime",
+		"startTimeUnixNano": ns(start + 10), "endTimeUnixNano": ns(start + 20),
+		"attributes": []any{
+			attr("gen_ai.system", map[string]any{"stringValue": "vertex_ai"}),
+			attr("gen_ai.request.model", map[string]any{"stringValue": "gemini-live"}),
+			attr("gen_ai.usage.input_tokens", map[string]any{"intValue": "900"}),
+			attr("gen_ai.usage.output_tokens", map[string]any{"intValue": "90"}),
+		},
+	}))
+	if err := store.flushPersist(); err != nil {
+		t.Fatal(err)
+	}
+	store.Ingest(export(map[string]any{
+		"traceId": traceID, "spanId": "root1", "name": "voice.session",
+		"startTimeUnixNano": ns(start), "endTimeUnixNano": ns(start + 60_000),
+	}))
+	if err := store.flushPersist(); err != nil {
+		t.Fatal(err)
+	}
+
+	cells, err := archive.UsageSeries(time.Now().Add(-24*time.Hour), time.Now(), int64(24*time.Hour/time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cells) != 1 || cells[0].Kind != "voice.session" || cells[0].Tenant != "" {
+		t.Errorf("cells = %+v, want one cell of kind voice.session and no tenant", cells)
 	}
 }

@@ -17,13 +17,6 @@ import (
 // written with INSERT OR IGNORE, so re-ingesting a span (a reopened
 // session, the startup backfill) never counts it twice.
 
-// Span attributes triage-core stamps on every LLM call (core's
-// setLLMSpanTenantAttrs); any other producer simply leaves them empty.
-const (
-	triageTenantAttr   = "triage.tenant"
-	triageCallKindAttr = "triage.llm.call_kind"
-)
-
 // DefaultUsageRetention is how long usage rows are kept. Rows are a few
 // hundred bytes, so this is far longer than a session is worth keeping.
 const DefaultUsageRetention = 90 * 24 * time.Hour
@@ -71,7 +64,15 @@ func ensureUsageSchema(db *sql.DB) error {
 // usageRowFromSpan returns the ledger row for an LLM span that reported
 // tokens. A span that is not an LLM call, or reported no tokens, has no row:
 // an AGENT/CHAIN parent repeating its child's counts would double them.
-func usageRowFromSpan(span *tracepkg.Span, sessionID string) (usageRow, bool) {
+//
+// The call kind is the OTel GenAI gen_ai.agent.name on the LLM span, so any
+// producer that follows the semantic conventions is grouped without
+// agentevals knowing about it. A span without it takes the name of its
+// trace's root span (the operation that made the call, e.g. voice.session)
+// once that root is seen: FillUsageKinds. The tenant has no convention, so its
+// attribute key is deployment config (--usage-tenant-attr); empty leaves
+// the tenant blank.
+func usageRowFromSpan(span *tracepkg.Span, sessionID, tenantAttr string) (usageRow, bool) {
 	if !adk.IsLLMSpan(span) {
 		return usageRow{}, false
 	}
@@ -86,14 +87,56 @@ func usageRowFromSpan(span *tracepkg.Span, sessionID string) (usageRow, bool) {
 		StartMs:      span.StartTime / 1000,
 		DurationMs:   span.Duration / 1000,
 		Service:      span.TagString(adk.OtelServiceName),
-		Tenant:       span.TagString(triageTenantAttr),
-		Kind:         span.TagString(triageCallKindAttr),
+		Tenant:       tenantOf(span, tenantAttr),
+		Kind:         span.TagString(adk.GenAIAgentName),
 		Model:        model,
 		Name:         span.OperationName,
 		InputTokens:  in,
 		OutputTokens: out,
 		IsError:      span.TagString("otel.status_code") == "ERROR",
 	}, true
+}
+
+func tenantOf(span *tracepkg.Span, attr string) string {
+	if attr == "" {
+		return ""
+	}
+	return span.TagString(attr)
+}
+
+// FillUsageKinds names the kind of every kindless row in each trace after
+// that trace's root span (traceID -> root span name).
+func (s *SQLiteStore) FillUsageKinds(roots map[string]string) error {
+	if len(roots) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`UPDATE llm_calls SET kind = ? WHERE trace_id = ? AND kind = ''`)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for traceID, name := range roots {
+		if _, err := stmt.Exec(name, traceID); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// UsageKindless reports whether any row still has no kind.
+func (s *SQLiteStore) UsageKindless() (bool, error) {
+	var one int
+	err := s.db.QueryRow("SELECT 1 FROM llm_calls WHERE kind = '' LIMIT 1").Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // InsertUsage writes rows in one transaction, ignoring spans already

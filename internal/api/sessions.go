@@ -124,6 +124,17 @@ func summarize(s *Session) SessionSummary {
 
 // spanOutline returns the earliest root span's name, the number of LLM
 // call spans and the number of spans with status ERROR in spans.
+// traceRootName returns the name of traceID's root span among spans, or ""
+// when it has not arrived yet.
+func traceRootName(spans []*tracepkg.Span, traceID string) string {
+	for _, sp := range spans {
+		if sp.TraceID == traceID && sp.ParentSpanID == "" {
+			return sp.OperationName
+		}
+	}
+	return ""
+}
+
 func spanOutline(spans []*tracepkg.Span) (rootName string, llmCalls, errs int) {
 	var rootStart int64
 	for _, sp := range spans {
@@ -202,10 +213,15 @@ type SessionStore struct {
 	// snapshots. Only collected when an archive is configured. Touched with
 	// mu held.
 	pendingUsage []usageRow
+	// pendingRoots maps a trace ID to its root span's name, for
+	// FillUsageKinds at the next flush. Touched with mu held.
+	pendingRoots map[string]string
 	// usageRetention bounds the ledger; lastUsagePrune rate-limits the
 	// prune to once a day.
 	usageRetention time.Duration
-	lastUsagePrune time.Time
+	// usageTenantAttr is SessionLimits.UsageTenantAttr.
+	usageTenantAttr string
+	lastUsagePrune  time.Time
 
 	// maxMemory caps the completed sessions held in memory (0 = no cap);
 	// active sessions always stay. Older completed sessions are evicted
@@ -230,6 +246,9 @@ const (
 type SessionLimits struct {
 	Memory    int
 	Retention time.Duration
+	// UsageTenantAttr is the span attribute the usage ledger reads the
+	// tenant from; empty records no tenant.
+	UsageTenantAttr string
 }
 
 func NewSessionStore(hub *sseHub) *SessionStore {
@@ -264,6 +283,7 @@ func NewSessionStoreWithArchive(hub *sseHub, store *SQLiteStore, limits SessionL
 	s.usageRetention = DefaultUsageRetention
 	s.maxMemory = limits.Memory
 	s.sessionRetention = limits.Retention
+	s.usageTenantAttr = limits.UsageTenantAttr
 	return s
 }
 
@@ -299,7 +319,7 @@ func (s *SessionStore) LoadPersisted() error {
 		var backfill []usageRow
 		if err := s.store.ForEachSnapshot(func(snap sessionSnapshot) {
 			for _, span := range snap.Spans {
-				if row, ok := usageRowFromSpan(span, snap.SessionID); ok {
+				if row, ok := usageRowFromSpan(span, snap.SessionID, s.usageTenantAttr); ok {
 					backfill = append(backfill, row)
 				}
 			}
@@ -308,6 +328,25 @@ func (s *SessionStore) LoadPersisted() error {
 		}
 		if err := s.store.InsertUsage(backfill); err != nil {
 			return fmt.Errorf("backfilling usage ledger: %w", err)
+		}
+	}
+	// Name kindless rows after their trace's root span, for rows written
+	// before roots were used as the fallback or whose root came later.
+	if kindless, err := s.store.UsageKindless(); err != nil {
+		return fmt.Errorf("checking usage ledger kinds: %w", err)
+	} else if kindless {
+		roots := map[string]string{}
+		if err := s.store.ForEachSnapshot(func(snap sessionSnapshot) {
+			for _, span := range snap.Spans {
+				if span.ParentSpanID == "" {
+					roots[span.TraceID] = span.OperationName
+				}
+			}
+		}); err != nil {
+			return fmt.Errorf("reading session archive for usage kinds: %w", err)
+		}
+		if err := s.store.FillUsageKinds(roots); err != nil {
+			return fmt.Errorf("filling usage kinds: %w", err)
 		}
 	}
 
@@ -560,6 +599,22 @@ func (s *SessionStore) pruneSessions() {
 	log.Printf("session archive: pruned %d session(s) older than %s and compacted", n, s.sessionRetention)
 }
 
+// requeueRootsLocked puts trace roots back for the next flush after a
+// failed write. Caller holds mu.
+func (s *SessionStore) requeueRootsLocked(roots map[string]string) {
+	if len(roots) == 0 {
+		return
+	}
+	if s.pendingRoots == nil {
+		s.pendingRoots = map[string]string{}
+	}
+	for id, name := range roots {
+		if _, ok := s.pendingRoots[id]; !ok {
+			s.pendingRoots[id] = name
+		}
+	}
+}
+
 // flushUsage writes buffered usage rows and, at most once a day, prunes
 // rows older than usageRetention. Rows go back into the buffer when the
 // write fails, so the next tick retries them.
@@ -567,6 +622,8 @@ func (s *SessionStore) flushUsage() error {
 	s.mu.Lock()
 	rows := s.pendingUsage
 	s.pendingUsage = nil
+	roots := s.pendingRoots
+	s.pendingRoots = nil
 	prune := s.usageRetention > 0 && time.Since(s.lastUsagePrune) >= 24*time.Hour
 	if prune {
 		s.lastUsagePrune = time.Now()
@@ -576,8 +633,15 @@ func (s *SessionStore) flushUsage() error {
 	if err := s.store.InsertUsage(rows); err != nil {
 		s.mu.Lock()
 		s.pendingUsage = append(rows, s.pendingUsage...)
+		s.requeueRootsLocked(roots)
 		s.mu.Unlock()
 		return fmt.Errorf("writing usage ledger: %w", err)
+	}
+	if err := s.store.FillUsageKinds(roots); err != nil {
+		s.mu.Lock()
+		s.requeueRootsLocked(roots)
+		s.mu.Unlock()
+		return fmt.Errorf("filling usage kinds: %w", err)
 	}
 	if prune {
 		if n, err := s.store.PruneUsage(time.Now().Add(-s.usageRetention)); err != nil {
@@ -672,8 +736,17 @@ func (s *SessionStore) Ingest(body map[string]any) int {
 				s.markChangedLocked(session)
 				ingested++
 				if s.store != nil {
-					if row, ok := usageRowFromSpan(span, session.ID); ok {
+					if row, ok := usageRowFromSpan(span, session.ID, s.usageTenantAttr); ok {
+						if row.Kind == "" {
+							row.Kind = traceRootName(session.Spans, span.TraceID)
+						}
 						s.pendingUsage = append(s.pendingUsage, row)
+					}
+					if span.ParentSpanID == "" {
+						if s.pendingRoots == nil {
+							s.pendingRoots = map[string]string{}
+						}
+						s.pendingRoots[span.TraceID] = span.OperationName
 					}
 				}
 

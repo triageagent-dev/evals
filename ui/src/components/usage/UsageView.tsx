@@ -44,9 +44,6 @@ const OTHER_COLOR = '#6b7586';
 const OTHER = 'Other';
 const NONE = '(none)';
 
-// triage-core's call kinds keep the same colour in every window.
-const KIND_ORDER = ['reflection', 'rca', 'guardrail', 'agent', 'knowledge', 'rsi', 'unknown'];
-
 const SURFACE = '#252a36';
 const REFRESH_MS = 60_000;
 
@@ -146,16 +143,11 @@ export const UsageView: React.FC = () => {
     }
 
     // The seven largest groups keep a colour; the rest fold into Other.
-    // Colours follow the group, not its rank: call kinds use a fixed order,
-    // other dimensions are coloured alphabetically among the kept groups.
+    // Colours follow the group, not its rank: kept groups are coloured
+    // alphabetically.
     const ranked = [...byGroup.entries()].sort((a, b) => (b[1].input + b[1].output) - (a[1].input + a[1].output));
     const kept = new Set(ranked.slice(0, SLOTS.length).map(([g]) => g));
-    const colourOrder = dim === 'kind'
-      ? [...kept].sort((a, b) => {
-        const ia = KIND_ORDER.indexOf(a), ib = KIND_ORDER.indexOf(b);
-        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
-      })
-      : [...kept].sort((a, b) => a.localeCompare(b));
+    const colourOrder = [...kept].sort((a, b) => a.localeCompare(b));
     const colour = new Map<string, string>();
     colourOrder.forEach((g, i) => colour.set(g, SLOTS[i]));
     const folded = (g: string) => (kept.has(g) ? g : OTHER);

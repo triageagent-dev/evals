@@ -126,7 +126,7 @@ func usage() {
 
 Usage:
   agentevals run <trace-file>... --eval-set <path> -m <metric> [-m <metric>...] [flags]
-  agentevals serve [--addr :8001] [--otlp-addr :4318] [--otlp-grpc-addr :4317] [--health-addr :9090] [--session-db path] [--session-memory n] [--session-retention 720h] [--session-secret secret]
+  agentevals serve [--addr :8001] [--otlp-addr :4318] [--otlp-grpc-addr :4317] [--health-addr :9090] [--session-db path] [--session-memory n] [--session-retention 720h] [--usage-tenant-attr key] [--session-secret secret]
                    [--admin-github-users user1,user2] [--default-role member]
   agentevals auth mint-token --name <label> [--ttl-days 3650] [--secret ...]
   agentevals mcp [--server-url http://localhost:8001] [--session-token ...]
@@ -435,6 +435,8 @@ func serveCmd(args []string) error {
 		"completed sessions kept in memory with --session-db; older ones stay in the archive and load on demand (0 = no cap); falls back to AGENTEVALS_SESSION_MEMORY")
 	sessionRetention := fs.Duration("session-retention", envDurationOrDefault("AGENTEVALS_SESSION_RETENTION", api.DefaultSessionRetention),
 		"delete archived sessions not updated for this long, once a day, then compact the file (0 = keep forever); falls back to AGENTEVALS_SESSION_RETENTION")
+	usageTenantAttr := fs.String("usage-tenant-attr", os.Getenv("AGENTEVALS_USAGE_TENANT_ATTR"),
+		"span attribute the token usage view reads the tenant from (e.g. tenant.id); empty records no tenant; falls back to AGENTEVALS_USAGE_TENANT_ATTR")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -449,7 +451,7 @@ func serveCmd(args []string) error {
 		}
 	}
 	return api.Serve(*addr, *otlpAddr, *otlpGRPCAddr, *healthAddr, *sessionDB, *sessionSecret, githubOAuth, adminUsers, *defaultRole,
-		api.SessionLimits{Memory: *sessionMemory, Retention: *sessionRetention})
+		api.SessionLimits{Memory: *sessionMemory, Retention: *sessionRetention, UsageTenantAttr: *usageTenantAttr})
 }
 
 // envIntOrDefault reads an integer env var, falling back to def when it is

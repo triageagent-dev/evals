@@ -29,6 +29,10 @@ persistence:
   # file (Go duration; "0" = keep forever).
   retention: 720h
 
+# -- Span attribute the token usage view reads the tenant from
+# (--usage-tenant-attr); empty records no tenant.
+usageTenantAttr: ""
+
 # -- GitHub logins that are always admin (--admin-github-users).
 adminGithubUsers: []
 
