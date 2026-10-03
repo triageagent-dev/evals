@@ -1,4 +1,60 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { PrettyText } from './PrettyText';
+
+// AGENTEVALS-GO FORK: user and agent messages collapse one by one (a
+// prompt can be thousands of words); collapsed, the header shows a one-line
+// preview and the length. Expanded text goes through PrettyText.
+function MessageBlock({ label, color, text, extra }: { label: string; color: string; text: string; extra?: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const preview = text.replace(/\s+/g, ' ').trim();
+  return (
+    <div style={{ marginBottom: '12px' }}>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(o => !o); } }}
+        style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', userSelect: 'none', minWidth: 0 }}
+      >
+        <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', width: '10px' }}>{open ? '\u25BE' : '\u25B8'}</span>
+        <span style={{
+          fontSize: '10px',
+          color,
+          fontWeight: 700,
+          textTransform: 'uppercase' as const,
+          letterSpacing: '0.5px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          flexShrink: 0,
+        }}>
+          {label}
+          {extra}
+        </span>
+        {!open && preview && (
+          <span style={{ fontSize: '13px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
+            {preview}
+          </span>
+        )}
+        <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', flexShrink: 0, marginLeft: open ? 'auto' : 0 }}>
+          {text.length.toLocaleString()} chars
+        </span>
+      </div>
+      {open && (
+        <div style={{
+          fontSize: '14px',
+          color: 'var(--text-primary)',
+          lineHeight: '1.6',
+          marginTop: '8px',
+          paddingLeft: '18px',
+        }}>
+          <PrettyText text={text} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface UserMessageProps {
   text: string;
@@ -6,29 +62,7 @@ interface UserMessageProps {
 }
 
 export function UserMessage({ text }: UserMessageProps) {
-  return (
-    <div style={{
-      marginBottom: '16px',
-    }}>
-      <div style={{
-        fontSize: '10px',
-        color: '#7C3AED',
-        marginBottom: '6px',
-        fontWeight: 700,
-        textTransform: 'uppercase' as const,
-        letterSpacing: '0.5px',
-      }}>
-        User
-      </div>
-      <div style={{
-        fontSize: '14px',
-        color: 'var(--text-primary)',
-        lineHeight: '1.6',
-      }}>
-        {text}
-      </div>
-    </div>
-  );
+  return <MessageBlock label="User" color="#7C3AED" text={text} />;
 }
 
 interface ToolCallMessageProps {
@@ -131,38 +165,26 @@ interface AgentMessageProps {
 }
 
 export function AgentMessage({ text, isStreaming }: AgentMessageProps) {
+  if (!text) {
+    return (
+      <div style={{ marginBottom: '12px', fontSize: '10px', color: '#10b981', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.5px' }}>
+        Agent <em style={{ color: 'var(--text-tertiary)', textTransform: 'none', fontWeight: 400 }}>Thinking...</em>
+      </div>
+    );
+  }
   return (
-    <div style={{
-      marginBottom: '16px',
-    }}>
-      <div style={{
-        fontSize: '10px',
-        color: '#10b981',
-        marginBottom: '6px',
-        fontWeight: 700,
-        textTransform: 'uppercase' as const,
-        letterSpacing: '0.5px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '6px',
-      }}>
-        Agent
-        {isStreaming && <span style={{
-          display: 'inline-block',
-          width: '6px',
-          height: '6px',
-          borderRadius: '50%',
-          background: '#10b981',
-          animation: 'pulse 1.5s ease-in-out infinite',
-        }} />}
-      </div>
-      <div style={{
-        fontSize: '14px',
-        color: 'var(--text-primary)',
-        lineHeight: '1.6',
-      }}>
-        {text || <em style={{ color: 'var(--text-tertiary)' }}>Thinking...</em>}
-      </div>
-    </div>
+    <MessageBlock
+      label="Agent"
+      color="#10b981"
+      text={text}
+      extra={isStreaming ? <span style={{
+        display: 'inline-block',
+        width: '6px',
+        height: '6px',
+        borderRadius: '50%',
+        background: '#10b981',
+        animation: 'pulse 1.5s ease-in-out infinite',
+      }} /> : undefined}
+    />
   );
 }
