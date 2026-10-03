@@ -140,17 +140,11 @@ func spanOutline(spans []*tracepkg.Span) (rootName string, llmCalls, errs int) {
 	return rootName, llmCalls, errs
 }
 
-// sessionStartedEvent / spanReceivedEvent mirror WSSessionStartedEvent /
-// WSSpanReceivedEvent (api/models.py).
+// sessionStartedEvent mirrors WSSessionStartedEvent (api/models.py).
+// WSSpanReceivedEvent is not sent; see Ingest.
 type sessionStartedEvent struct {
 	Type    string         `json:"type"`
 	Session SessionSummary `json:"session"`
-}
-
-type spanReceivedEvent struct {
-	Type      string  `json:"type"`
-	SessionID string  `json:"sessionId"`
-	Span      spanDTO `json:"span"`
 }
 
 // sessionCompleteEvent mirrors WSSessionCompleteEvent (api/models.py),
@@ -661,13 +655,14 @@ func (s *SessionStore) Ingest(body map[string]any) int {
 
 			session, isNew := s.getOrCreateSession(name, tr.TraceID, evalSetID, resourceAttrs)
 
-			// session_started must reach clients before any span/update
-			// event for this session, so the UI has a session to attach
-			// those events to (LiveStreamingView.tsx's span_received/
-			// user_input/etc. handlers all no-op on an unknown sessionId).
-			if isNew && s.hub != nil {
-				s.hub.broadcast(sessionStartedEvent{Type: "session_started", Session: summarize(session)})
-			}
+			// session_started must reach clients before any update event
+			// for this session, so the UI has a session to attach those
+			// events to (LiveStreamingView.tsx's user_input/etc. handlers
+			// no-op on an unknown sessionId). It is sent after this batch's
+			// spans are in, unlike ws_server.py, so its summary already
+			// names the root span and counts LLM calls and the UI can keep
+			// a server's no-LLM traces out of the live list.
+			var updates []sessionScopedUpdate
 
 			for _, span := range tr.AllSpans {
 				if len(session.Spans) >= maxSpansPerSession {
@@ -682,10 +677,14 @@ func (s *SessionStore) Ingest(body map[string]any) int {
 					}
 				}
 
+				// Diverges from process_traces, which also broadcasts every
+				// span as span_received: a traced server exports hundreds of
+				// spans per batch, which overflowed each client's buffer and
+				// re-rendered the whole session list once per span. The UI
+				// reads spans on demand (session-spans) instead.
 				if s.hub != nil {
-					s.hub.broadcast(spanReceivedEvent{Type: "span_received", SessionID: session.ID, Span: spanToDTO(span)})
 					for _, u := range session.extractor.ProcessSpan(span) {
-						s.hub.broadcast(sessionScopedUpdate{SessionID: session.ID, Update: u})
+						updates = append(updates, sessionScopedUpdate{SessionID: session.ID, Update: u})
 					}
 				}
 
@@ -697,6 +696,15 @@ func (s *SessionStore) Ingest(body map[string]any) int {
 				if span.ParentSpanID == "" {
 					session.HasRootSpan = true
 					s.scheduleCompletionLocked(session.ID)
+				}
+			}
+
+			if s.hub != nil {
+				if isNew {
+					s.hub.broadcast(sessionStartedEvent{Type: "session_started", Session: summarize(session)})
+				}
+				for _, u := range updates {
+					s.hub.broadcast(u)
 				}
 			}
 		}

@@ -69,7 +69,7 @@ func TestWSUpdatesHandler_LiveEvents(t *testing.T) {
 	}
 	store.Ingest(body)
 
-	wantTypes := []string{"session_started", "span_received", "user_input", "agent_response", "token_update", "span_received", "tool_call", "tool_result"}
+	wantTypes := []string{"session_started", "user_input", "agent_response", "token_update", "tool_call", "tool_result"}
 	gotTypes := make([]string, 0, len(wantTypes))
 	deadline := time.After(2 * time.Second)
 	for len(gotTypes) < len(wantTypes) {

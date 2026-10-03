@@ -79,10 +79,22 @@ func wsUpdatesHandler(hub *sseHub) http.HandlerFunc {
 				if err := conn.WriteJSON(event); err != nil {
 					return
 				}
+				if hub.takeResync(ch) {
+					if err := conn.WriteJSON(resyncEvent{Type: "resync"}); err != nil {
+						return
+					}
+				}
 			case <-ticker.C:
 				_ = conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					return
+				}
+				// A client that overflowed and then went quiet still learns
+				// it missed events.
+				if hub.takeResync(ch) {
+					if err := conn.WriteJSON(resyncEvent{Type: "resync"}); err != nil {
+						return
+					}
 				}
 			case <-closed:
 				return

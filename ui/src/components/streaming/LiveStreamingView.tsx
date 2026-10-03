@@ -137,6 +137,11 @@ export function LiveStreamingView() {
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryDelayRef = useRef(1000);
   const mountedRef = useRef(true);
+  // What the user cleared or removed from the view. A re-fetch of the
+  // session list (on connect, or on a resync after dropped events) must not
+  // bring those back. Lives for this page view, as the clear itself does.
+  const clearedBeforeRef = useRef<number>(0);
+  const removedIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     mountedRef.current = true;
@@ -165,7 +170,28 @@ export function LiveStreamingView() {
         setActiveSessions(prev => {
           const newMap = new Map(prev);
           for (const s of sessions) {
-            if (newMap.has(s.sessionId)) continue;
+            const existing = newMap.get(s.sessionId);
+            if (existing) {
+              // Events for this session may have been dropped: take the
+              // server's completion rather than staying "active" forever.
+              if (existing.status === 'active' && s.isComplete) {
+                newMap.set(s.sessionId, {
+                  ...existing,
+                  status: 'complete',
+                  invocations: s.invocations,
+                  liveElements: s.invocations?.length
+                    ? invocationsToElements(s.invocations)
+                    : existing.liveElements,
+                  completedAt: s.completedAt,
+                  rootSpanName: s.rootSpanName,
+                  llmCalls: s.llmCalls,
+                  errors: s.errors,
+                });
+              }
+              continue;
+            }
+            if (removedIdsRef.current.has(s.sessionId)) continue;
+            if (s.isComplete && Date.parse(s.startedAt) < clearedBeforeRef.current) continue;
             newMap.set(s.sessionId, {
               sessionId: s.sessionId,
               traceId: s.traceId,
@@ -190,6 +216,16 @@ export function LiveStreamingView() {
       } catch {
         // backend not ready yet - will retry on next SSE connect
       }
+    };
+
+    // One re-fetch for a burst of resync signals or unknown-session events.
+    let resyncTimer: ReturnType<typeof setTimeout> | null = null;
+    const requestResync = () => {
+      if (resyncTimer) return;
+      resyncTimer = setTimeout(() => {
+        resyncTimer = null;
+        fetchExistingSessions();
+      }, 1000);
     };
 
     const connectWS = () => {
@@ -254,29 +290,25 @@ export function LiveStreamingView() {
                   totalOutputTokens: 0,
                 },
                 startedAt: data.session.startedAt,
+                rootSpanName: data.session.rootSpanName,
+                llmCalls: data.session.llmCalls,
               });
               return newMap;
             });
             break;
 
-          case 'span_received':
-            setActiveSessions(prev => {
-              const session = prev.get(data.sessionId);
-              if (!session) return prev;
-
-              const newMap = new Map(prev);
-              newMap.set(data.sessionId, {
-                ...session,
-                spans: [...session.spans, data.span],
-              });
-              return newMap;
-            });
+          case 'resync':
+            // The server dropped events for this connection.
+            requestResync();
             break;
 
           case 'user_input':
             setActiveSessions(prev => {
               const session = prev.get(data.sessionId);
-              if (!session) return prev;
+              if (!session) {
+                requestResync();
+                return prev;
+              }
 
               const newMap = new Map(prev);
               newMap.set(data.sessionId, {
@@ -298,7 +330,10 @@ export function LiveStreamingView() {
           case 'tool_call':
             setActiveSessions(prev => {
               const session = prev.get(data.sessionId);
-              if (!session) return prev;
+              if (!session) {
+                requestResync();
+                return prev;
+              }
 
               const newMap = new Map(prev);
               newMap.set(data.sessionId, {
@@ -320,7 +355,10 @@ export function LiveStreamingView() {
           case 'tool_result':
             setActiveSessions(prev => {
               const session = prev.get(data.sessionId);
-              if (!session) return prev;
+              if (!session) {
+                requestResync();
+                return prev;
+              }
 
               const newMap = new Map(prev);
               newMap.set(data.sessionId, {
@@ -342,7 +380,10 @@ export function LiveStreamingView() {
           case 'agent_response':
             setActiveSessions(prev => {
               const session = prev.get(data.sessionId);
-              if (!session) return prev;
+              if (!session) {
+                requestResync();
+                return prev;
+              }
 
               const newMap = new Map(prev);
               newMap.set(data.sessionId, {
@@ -485,6 +526,7 @@ export function LiveStreamingView() {
         clearTimeout(retryTimeoutRef.current);
         retryTimeoutRef.current = null;
       }
+      if (resyncTimer) clearTimeout(resyncTimer);
     };
   }, []);
 
@@ -642,8 +684,11 @@ export function LiveStreamingView() {
     return haystacks.some(h => h.toLowerCase().includes(normalizedQuery));
   };
 
+  // A session made no LLM call once it is complete, or once its root span
+  // has arrived (the root ends last, so the trace is in) with none so far.
   const hasNoLLM = (s: LiveSession) =>
-    s.status === 'complete' && !s.invocations?.length && (s.llmCalls ?? 0) === 0;
+    !s.invocations?.length && (s.llmCalls ?? 0) === 0 &&
+    (s.status === 'complete' || !!s.rootSpanName);
   const matched = Array.from(activeSessions.values()).filter(withinRange).filter(matchesSearch);
   const hiddenNoLLM = showNoLLM ? 0 : matched.filter(hasNoLLM).length;
   const sessions = showNoLLM ? matched : matched.filter(s => !hasNoLLM(s));
@@ -815,6 +860,7 @@ export function LiveStreamingView() {
             {completedSessions.length > 0 && (
               <button
                 onClick={() => {
+                  clearedBeforeRef.current = Date.now();
                   actions.clearAllSessions();
                   if (selectedGoldenId && completedSessions.some(s => s.sessionId === selectedGoldenId)) {
                     setSelectedGoldenId(null);
@@ -1064,6 +1110,7 @@ export function LiveStreamingView() {
                       selectedGoldenId === session.sessionId ? null : session.sessionId
                     )}
                     onRemove={() => {
+                      removedIdsRef.current.add(session.sessionId);
                       actions.removeSession(session.sessionId);
                       if (selectedGoldenId === session.sessionId) setSelectedGoldenId(null);
                       setComparisonSessionIds(prev => {
