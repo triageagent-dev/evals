@@ -85,6 +85,10 @@ type SessionSummary struct {
 	LLMCalls     int    `json:"llmCalls"`
 	// Errors counts spans whose status is ERROR (otel.status_code).
 	Errors int `json:"errors"`
+	// DurationMs is the session's span window: earliest span start to
+	// latest span end, in milliseconds. Not CompletedAt - StartedAt, which
+	// is ingest wall-clock and includes the completion grace.
+	DurationMs int64 `json:"durationMs"`
 }
 
 func summarize(s *Session) SessionSummary {
@@ -110,6 +114,7 @@ func summarize(s *Session) SessionSummary {
 		RootSpanName: rootName,
 		LLMCalls:     llmCalls,
 		Errors:       errs,
+		DurationMs:   spanWindowMs(s.Spans),
 		SessionID:    s.ID,
 		TraceID:      s.PrimaryTraceID,
 		EvalSetID:    evalSetID,
@@ -133,6 +138,21 @@ func traceRootName(spans []*tracepkg.Span, traceID string) string {
 		}
 	}
 	return ""
+}
+
+// spanWindowMs returns the time from the earliest span start to the latest
+// span end in spans, in milliseconds; 0 when there are no spans.
+func spanWindowMs(spans []*tracepkg.Span) int64 {
+	var start, end int64
+	for i, sp := range spans {
+		if i == 0 || sp.StartTime < start {
+			start = sp.StartTime
+		}
+		if e := sp.StartTime + sp.Duration; i == 0 || e > end {
+			end = e
+		}
+	}
+	return (end - start) / 1000
 }
 
 func spanOutline(spans []*tracepkg.Span) (rootName string, llmCalls, errs int) {
@@ -174,6 +194,7 @@ type sessionCompleteEvent struct {
 	RootSpanName string `json:"rootSpanName,omitempty"`
 	LLMCalls     int    `json:"llmCalls"`
 	Errors       int    `json:"errors"`
+	DurationMs   int64  `json:"durationMs"`
 }
 
 // SessionStore holds every session ingested since process start, in memory,
@@ -894,6 +915,7 @@ func (s *SessionStore) completeSession(sessionID string) {
 	completedAt := now.Format(time.RFC3339)
 	invocations := session.Invocations
 	rootName, llmCalls, errs := spanOutline(session.Spans)
+	durationMs := spanWindowMs(session.Spans)
 	hub := s.hub
 	s.mu.Unlock()
 
@@ -906,6 +928,7 @@ func (s *SessionStore) completeSession(sessionID string) {
 			RootSpanName: rootName,
 			LLMCalls:     llmCalls,
 			Errors:       errs,
+			DurationMs:   durationMs,
 		})
 	}
 }

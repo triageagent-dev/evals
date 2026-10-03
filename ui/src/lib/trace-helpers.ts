@@ -71,3 +71,11 @@ export function findDescendantLLMSpans(root: Span): Span[] {
   results.sort((a, b) => a.startTime - b.startTime);
   return results;
 }
+
+/** A completed session's span window: ms under a second, then 0.1s, then m ss. */
+export function formatSpanDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSeconds = Math.round(ms / 1000);
+  return `${Math.floor(totalSeconds / 60)}m ${String(totalSeconds % 60).padStart(2, '0')}s`;
+}

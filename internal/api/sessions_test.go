@@ -3,6 +3,8 @@ package api
 import (
 	"testing"
 	"time"
+
+	tracepkg "github.com/triageagent-dev/agentevals-go/internal/trace"
 )
 
 // sampleTracesBodyWithParent is sampleTracesBody plus an explicit
@@ -316,5 +318,23 @@ func TestSessionStore_Trace(t *testing.T) {
 
 	if _, ok := store.Trace("nonexistent"); ok {
 		t.Error("expected nonexistent session to be absent")
+	}
+}
+
+// TestSpanWindowMs: a session's duration is its span window (earliest
+// start to latest end), not ingest wall-clock - a 464ms call reads 464ms,
+// not the 3s completion grace.
+func TestSpanWindowMs(t *testing.T) {
+	if got := spanWindowMs(nil); got != 0 {
+		t.Fatalf("no spans: got %d, want 0", got)
+	}
+	spans := []*tracepkg.Span{
+		{StartTime: 1_000_000, Duration: 464_000}, // root: 1.000s-1.464s
+		{StartTime: 1_010_000, Duration: 300_000}, // child inside it
+		{StartTime: 900_000, Duration: 50_000},    // earlier span
+		{StartTime: 1_400_000, Duration: 100_000}, // ends last, 1.500s
+	}
+	if got := spanWindowMs(spans); got != 600 {
+		t.Fatalf("got %d ms, want 600", got)
 	}
 }

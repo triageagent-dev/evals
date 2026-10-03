@@ -164,6 +164,7 @@ export function LiveStreamingView() {
           rootSpanName?: string;
           llmCalls?: number;
           errors?: number;
+          durationMs?: number;
         }> = envelope.data;
         if (!mountedRef.current) return;
 
@@ -186,6 +187,7 @@ export function LiveStreamingView() {
                   rootSpanName: s.rootSpanName,
                   llmCalls: s.llmCalls,
                   errors: s.errors,
+                  durationMs: s.durationMs,
                 });
               }
               continue;
@@ -209,6 +211,7 @@ export function LiveStreamingView() {
               rootSpanName: s.rootSpanName,
               llmCalls: s.llmCalls,
               errors: s.errors,
+              durationMs: s.durationMs,
             });
           }
           return newMap;
@@ -292,6 +295,7 @@ export function LiveStreamingView() {
                 startedAt: data.session.startedAt,
                 rootSpanName: data.session.rootSpanName,
                 llmCalls: data.session.llmCalls,
+                durationMs: data.session.durationMs,
               });
               return newMap;
             });
@@ -477,6 +481,7 @@ export function LiveStreamingView() {
                   rootSpanName: data.rootSpanName,
                   llmCalls: data.llmCalls,
                   errors: data.errors,
+                  durationMs: data.durationMs,
                 });
               } else {
                 newMap.set(data.sessionId, {
@@ -490,6 +495,7 @@ export function LiveStreamingView() {
                   rootSpanName: data.rootSpanName,
                   llmCalls: data.llmCalls,
                   errors: data.errors,
+                  durationMs: data.durationMs,
                 });
               }
 

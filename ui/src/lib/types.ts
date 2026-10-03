@@ -574,6 +574,8 @@ export interface LiveSession {
   rootSpanName?: string;
   llmCalls?: number;
   errors?: number;
+  // Span window (earliest span start to latest span end), not ingest time.
+  durationMs?: number;
 }
 
 // Inspector-specific types

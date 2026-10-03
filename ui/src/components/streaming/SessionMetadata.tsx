@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { estimateCostUsd, formatCostUsd } from '../../lib/pricing';
+import { formatSpanDuration } from '../../lib/trace-helpers';
 
 interface SessionMetadataProps {
   session: {
@@ -8,6 +9,7 @@ interface SessionMetadataProps {
     metadata: Record<string, any>;
     startedAt: string;
     completedAt?: string | null;
+    durationMs?: number;
     status: 'active' | 'complete';
     invocations?: Array<{
       modelInfo?: {
@@ -78,7 +80,12 @@ export function SessionMetadata({ session, liveStats, modelName }: SessionMetada
   const provider = session.invocations?.[0]?.modelInfo?.provider;
   const totalCacheCreation = session.invocations?.reduce((sum, inv) => sum + (inv.modelInfo?.cacheCreationTokens || 0), 0) || 0;
   const totalCacheRead = session.invocations?.reduce((sum, inv) => sum + (inv.modelInfo?.cacheReadTokens || 0), 0) || 0;
-  const duration = useDuration(session.startedAt, session.completedAt, session.status === 'active');
+  // Ingest wall-clock only while active; once complete, the span window -
+  // completedAt includes the completion grace, so a 464ms call read "3s".
+  const wallClock = useDuration(session.startedAt, session.completedAt, session.status === 'active');
+  const duration = session.status === 'complete' && session.durationMs != null
+    ? formatSpanDuration(session.durationMs)
+    : wallClock;
   const estimatedCost = totalTokens > 0
     ? estimateCostUsd(modelName, liveStats.totalInputTokens, liveStats.totalOutputTokens)
     : null;

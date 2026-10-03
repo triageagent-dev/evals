@@ -4,6 +4,7 @@ import { SpansPanel } from './SpansPanel';
 import { LiveConversationPanel } from './LiveConversationPanel';
 import type { ConversationElement } from './LiveConversationPanel';
 import { SessionMetadata } from './SessionMetadata';
+import { formatSpanDuration } from '../../lib/trace-helpers';
 import type { AnnotationQueue } from '../../lib/types';
 
 interface Invocation {
@@ -47,6 +48,7 @@ interface SessionCardProps {
     rootSpanName?: string;
     llmCalls?: number;
     errors?: number;
+    durationMs?: number;
   };
   isSelected: boolean;
   onSelect: () => void;
@@ -185,6 +187,20 @@ export function SessionCard({ session, isSelected, onSelect, onRemove, evaluatio
                 borderRadius: '6px',
               }}>
                 {totalTokens.toLocaleString()} tokens
+              </span>
+            )}
+
+            {session.status === 'complete' && session.durationMs != null && (
+              <span title="Span window: earliest span start to latest span end" style={{
+                fontSize: '11px',
+                fontWeight: 600,
+                color: 'var(--text-tertiary)',
+                background: 'var(--bg-primary)',
+                padding: '4px 10px',
+                borderRadius: '6px',
+                fontVariantNumeric: 'tabular-nums',
+              }}>
+                {formatSpanDuration(session.durationMs)}
               </span>
             )}
 
